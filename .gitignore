@@ -1,1 +1,8 @@
 /target
+example-template
+
+# test gadget stuff
+auth_token
+current_submission.tar.rsyncdiff
+last_submission_id.txt
+last_submission_rsyncsig.bin
