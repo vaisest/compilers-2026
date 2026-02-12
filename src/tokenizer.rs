@@ -1,8 +1,6 @@
-// use regex::Regex;
-
-pub fn compile(source_code: String, _file_name: Option<String>) -> Vec<u8> {
+pub fn compile(source_code: &str, _file_name: Option<String>) -> Vec<u8> {
     let out = vec![];
-    let _tokens = tokenize(&source_code);
+    let _tokens = tokenize(source_code);
     out
 }
 
@@ -15,6 +13,8 @@ enum TokenType {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+// TODO: the course material suggests making a wildcard codeloc that would be
+// equal to any location
 struct CodeLoc {
     line: usize,
     col: usize,
@@ -31,7 +31,7 @@ fn is_valid_for(token: TokenType, c: char) -> bool {
     match token {
         TokenType::Identifier => c == '_' || c.is_alphanumeric(),
         TokenType::Integer => c.is_numeric(),
-        TokenType::Operator => ['*', '+', '-', '/', '<', '>', '=', '!'].contains(&c),
+        TokenType::Operator => ['*', '+', '-', '/', '<', '>', '=', '!', '%'].contains(&c),
         TokenType::Punctuation => ['(', ')', '{', '}', ',', ';'].contains(&c),
     }
 }
@@ -43,16 +43,17 @@ fn tokenize(source_code: &str) -> Vec<Token> {
     let chars = source_code.chars().collect::<Vec<_>>();
     let mut line = 0usize;
     let mut col = 0usize;
-    let mut token = None;
+    let mut current_token = None;
 
+    // we scan through the input by character, while keeping track of the column and line separately
     while idx < chars.len() {
         // ignore whitespace
         if chars[idx].is_whitespace() {
             // windows "\r\n" will for sure cause problems here
             // when we encounter whitespace, flush the token as it ends here
-            if token.is_some() {
-                output.push(token.unwrap());
-                token = None;
+            if current_token.is_some() {
+                output.push(current_token.unwrap());
+                current_token = None;
             }
             if chars[idx] == '\n' {
                 line += 1;
@@ -72,35 +73,54 @@ fn tokenize(source_code: &str) -> Vec<Token> {
             continue;
         }
 
-        if token.is_some() && !is_valid_for(token.as_ref().unwrap().type_, chars[idx]) {
-            output.push(token.unwrap());
-            token = None;
+        if current_token.is_some()
+            && !is_valid_for(current_token.as_ref().unwrap().type_, chars[idx])
+        {
+            output.push(current_token.unwrap());
+            current_token = None;
         }
 
+        if let Some(current_token) = current_token.as_mut() {
+            current_token.text.push(chars[idx]);
+            idx += 1;
+            col += 1;
         // the first character of a token defines its type
-        if token.is_none() {
+        } else {
+            let loc = CodeLoc { line, col };
+            let mut text = chars[idx].to_string();
+
             let type_ = match chars[idx] {
                 '0'..='9' => TokenType::Integer,
                 '_' | 'a'..='z' | 'A'..='Z' => TokenType::Identifier,
-                '*' | '+' | '-' | '/' | '<' | '>' | '=' | '!' => TokenType::Operator,
+                first @ ('*' | '+' | '-' | '/' | '<' | '>' | '=' | '!' | '%') => {
+                    let next = chars.get(idx + 1);
+                    if let ('=' | '!' | '<' | '>', Some('=')) = (first, next) {
+                        text.push('=');
+                    }
+                    TokenType::Operator
+                }
                 '(' | ')' | '{' | '}' | ',' | ';' => TokenType::Punctuation,
-                a => todo!("'{a}'"),
+                a => todo!("character '{a}' is not recognized as part of any token"),
             };
-            token.replace(Token {
-                type_,
-                loc: CodeLoc { line, col },
-                text: String::new(),
-            });
+
+            idx += text.len();
+            col += text.len();
+            let new_token = Token { type_, loc, text };
+
+            match type_ {
+                // operators and punctuation are not arbitrarily long and can be flushed right away
+                TokenType::Operator | TokenType::Punctuation => {
+                    output.push(new_token);
+                }
+                TokenType::Identifier | TokenType::Integer => {
+                    current_token.replace(new_token);
+                }
+            }
         }
-
-        token.as_mut().unwrap().text.push(chars[idx]);
-
-        idx += 1;
-        col += 1;
     }
 
-    if token.is_some() {
-        output.push(token.unwrap());
+    if let Some(current_token) = current_token {
+        output.push(current_token);
     }
     output
 }
@@ -108,7 +128,12 @@ fn tokenize(source_code: &str) -> Vec<Token> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use itertools::Itertools;
     use pretty_assertions::assert_eq;
+
+    fn tokens_as_text_vec(tokens: &[Token]) -> Vec<&str> {
+        tokens.iter().map(|token| token.text.as_str()).collect_vec()
+    }
 
     #[test]
     fn it_works() {
@@ -196,7 +221,17 @@ mod tests {
                 Token {
                     loc: CodeLoc { line: 0, col: 16 },
                     type_: TokenType::Punctuation,
-                    text: "();".to_string()
+                    text: "(".to_string()
+                },
+                Token {
+                    loc: CodeLoc { line: 0, col: 17 },
+                    type_: TokenType::Punctuation,
+                    text: ")".to_string()
+                },
+                Token {
+                    loc: CodeLoc { line: 0, col: 18 },
+                    type_: TokenType::Punctuation,
+                    text: ";".to_string()
                 },
                 Token {
                     loc: CodeLoc { line: 1, col: 0 },
@@ -234,6 +269,81 @@ mod tests {
                     text: "}".to_string()
                 }
             ]
+        );
+    }
+
+    // compare token output to the course material sandbox. the matching string
+    // is acquired directly from the web page with:
+    // ´JSON.stringify(Array.from(document.querySelectorAll("span.token")).map(it => it.textContent))`
+    // in the js console
+    #[test]
+    fn language_spec_example_works_and_matches_sandbox() {
+        let input = "var not = read_int();
+print_int(n);
+while n > 1 do {
+    if n % 2 == 0 then {
+        n = n / 2;
+    } else {
+        n = 3*n + 1;
+    }
+    print_int(n);
+}
+";
+
+        assert_eq!(
+            tokens_as_text_vec(&tokenize(input)),
+            vec![
+                "var",
+                "not",
+                "=",
+                "read_int",
+                "(",
+                ")",
+                ";",
+                "print_int",
+                "(",
+                "n",
+                ")",
+                ";",
+                "while",
+                "n",
+                ">",
+                "1",
+                "do",
+                "{",
+                "if",
+                "n",
+                "%",
+                "2",
+                "==",
+                "0",
+                "then",
+                "{",
+                "n",
+                "=",
+                "n",
+                "/",
+                "2",
+                ";",
+                "}",
+                "else",
+                "{",
+                "n",
+                "=",
+                "3",
+                "*",
+                "n",
+                "+",
+                "1",
+                ";",
+                "}",
+                "print_int",
+                "(",
+                "n",
+                ")",
+                ";",
+                "}",
+            ],
         );
     }
 }

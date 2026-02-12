@@ -1,16 +1,16 @@
+#![warn(clippy::pedantic)]
 use base64::{Engine, engine::general_purpose};
-use compiler::compile;
 use serde::Deserialize;
 use std::{
     io::Write,
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     str::FromStr,
 };
+mod tokenizer;
+use tokenizer::compile;
 
 use clap::{Parser, Subcommand};
 use serde_json::Error;
-
-mod compiler;
 
 #[derive(Parser)]
 struct Cli {
@@ -52,7 +52,7 @@ fn handle(mut stream: TcpStream) -> Result<(), Error> {
                 .expect("failed to write response");
         }
         "compile" => {
-            let out = compile(req.code.unwrap(), Some("(source code)".to_string()));
+            let out = compile(&req.code.unwrap(), Some("(source code)".to_string()));
             stream
                 .write_all(general_purpose::STANDARD.encode(out.as_slice()).as_bytes())
                 .expect("failed to write response");
