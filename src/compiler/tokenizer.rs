@@ -1,9 +1,3 @@
-pub fn compile(source_code: &str, _file_name: Option<String>) -> Vec<u8> {
-    let out = vec![];
-    let _tokens = tokenize(source_code);
-    out
-}
-
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum TokenType {
     Identifier,
@@ -15,13 +9,13 @@ enum TokenType {
 #[derive(Debug, PartialEq, Eq)]
 // TODO: the course material suggests making a wildcard codeloc that would be
 // equal to any location
-struct CodeLoc {
+pub struct CodeLoc {
     line: usize,
     col: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Token {
+pub struct Token {
     type_: TokenType,
     loc: CodeLoc,
     text: String,
@@ -36,7 +30,7 @@ fn is_valid_for(token: TokenType, c: char) -> bool {
     }
 }
 
-fn tokenize(source_code: &str) -> Vec<Token> {
+pub fn tokenize(source_code: &str) -> Vec<Token> {
     let mut output: Vec<Token> = vec![];
 
     let mut idx = 0;

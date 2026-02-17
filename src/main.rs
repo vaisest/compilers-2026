@@ -6,8 +6,7 @@ use std::{
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     str::FromStr,
 };
-mod tokenizer;
-use tokenizer::compile;
+mod compiler;
 
 use clap::{Parser, Subcommand};
 use serde_json::Error;
@@ -52,7 +51,7 @@ fn handle(mut stream: TcpStream) -> Result<(), Error> {
                 .expect("failed to write response");
         }
         "compile" => {
-            let out = compile(&req.code.unwrap(), Some("(source code)".to_string()));
+            let out = compiler::compile(&req.code.unwrap(), Some("(source code)".to_string()));
             stream
                 .write_all(general_purpose::STANDARD.encode(out.as_slice()).as_bytes())
                 .expect("failed to write response");
