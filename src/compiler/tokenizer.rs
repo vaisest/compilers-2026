@@ -1,12 +1,12 @@
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum TokenType {
+pub enum TokenType {
     Identifier,
     Integer,
     Operator,
     Punctuation,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 // TODO: the course material suggests making a wildcard codeloc that would be
 // equal to any location
 pub struct CodeLoc {
@@ -14,11 +14,11 @@ pub struct CodeLoc {
     col: usize,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Token {
-    type_: TokenType,
-    loc: CodeLoc,
-    text: String,
+    pub type_: TokenType,
+    pub loc: CodeLoc,
+    pub text: String,
 }
 
 fn is_valid_for(token: TokenType, c: char) -> bool {
