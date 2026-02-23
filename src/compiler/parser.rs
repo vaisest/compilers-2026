@@ -6,6 +6,15 @@ pub enum BinaryOp {
     Mul,
     Sub,
     Div,
+    Eq,
+    Neq,
+    Rem,
+    Or,
+    And,
+    Lt,
+    Gt,
+    Leq,
+    Geq,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Expression {
@@ -13,6 +22,8 @@ pub enum Expression {
     Literal(i64),
     Identifier(String),
     If(Box<Expression>, Box<Expression>, Option<Box<Expression>>),
+    Function(String, Vec<Expression>),
+    Block(Vec<Expression>),
 }
 
 struct Parser {
@@ -27,7 +38,29 @@ fn op_type_for_binary_operator(operator: &Token) -> BinaryOp {
         "-" => BinaryOp::Sub,
         "*" => BinaryOp::Mul,
         "/" => BinaryOp::Div,
+        "==" => BinaryOp::Eq,
+        "!=" => BinaryOp::Neq,
+        "%" => BinaryOp::Rem,
+        "or" => BinaryOp::Or,
+        "and" => BinaryOp::And,
+        "<" => BinaryOp::Lt,
+        ">" => BinaryOp::Gt,
+        "<=" => BinaryOp::Leq,
+        ">=" => BinaryOp::Geq,
         _ => todo!(),
+    }
+}
+
+fn operator_precedence(op: &str) -> usize {
+    // higher number means higher precedence
+    match op {
+        "or" => 1,
+        "and" => 2,
+        "==" | "!=" => 3,
+        "<" | "<=" | ">" | ">=" => 4,
+        "+" | "-" => 5,
+        "*" | "/" | "%" => 6,
+        _ => panic!("this is not a supported operator"),
     }
 }
 
@@ -67,13 +100,34 @@ impl Parser {
         }
     }
 
+    fn parse_argument_list(&mut self) -> Result<Vec<Expression>, String> {
+        let mut args = vec![];
+        loop {
+            args.push(self.parse_expression()?);
+            if self.peek().is_some_and(|v| v.text == ",") {
+                self.consume(None)?;
+            } else {
+                break;
+            }
+        }
+        Ok(args)
+    }
+
     fn parse_identifier(&mut self) -> ParseResult {
         let token = self.consume(None)?;
-        if token.type_ == TokenType::Identifier {
-            Ok(Expression::Identifier(token.text.clone()))
-        } else {
-            Err("Unexpected token: expected a literal integer".to_string())
+        if token.type_ != TokenType::Identifier {
+            return Err("Unexpected token: expected a literal integer".to_string());
         }
+
+        if self.peek().is_some_and(|v| v.text == "(") {
+            // consume (
+            self.consume(None)?;
+            let args = self.parse_argument_list()?;
+            self.consume(Some(&[")"]))?;
+            return Ok(Expression::Function(token.text, args));
+        }
+
+        Ok(Expression::Identifier(token.text.clone()))
     }
 
     fn parse_if(&mut self) -> ParseResult {
@@ -108,9 +162,10 @@ impl Parser {
             (TokenType::Integer, _) => self.parse_int_literal(),
 
             (TokenType::Punctuation, "(") => self.parse_parenthesized(),
-            _ => Err(
-                "Unexpected token found: expected an identifier or a literal integer".to_string(),
-            ),
+            (TokenType::Punctuation, "{") => self.parse_curlisized(),
+            (_, s) => Err(format!(
+                "Unexpected token found: expected an identifier or a literal integer, but received: {s}"
+            )),
         }
     }
 
@@ -121,34 +176,51 @@ impl Parser {
         Ok(expr)
     }
 
-    fn parse_term(&mut self) -> ParseResult {
-        let mut left = self.parse_factor()?;
-        while self
-            .peek()
-            .is_some_and(|v| ["*", "/"].contains(&v.text.as_str()))
-        {
-            let operator = self.consume(None)?;
-            let right = self.parse_factor()?;
-            let op_type = op_type_for_binary_operator(&operator);
-            left = Expression::Binary(op_type, Box::new(left), Box::new(right));
+    fn parse_curlisized(&mut self) -> ParseResult {
+        self.consume(Some(&["{"]))?;
+        let mut expressions = vec![];
+        while self.peek().is_some_and(|v| v.text.as_str() != "}") {
+            expressions.push(self.parse_expression()?);
         }
-        Ok(left)
+        self.consume(Some(&["}"]))?;
+        Ok(Expression::Block(expressions))
     }
 
     fn parse_expression(&mut self) -> ParseResult {
-        let mut left = self.parse_term()?;
+        let lhs = self.parse_factor()?;
+        self.parse_expression_(lhs, 0)
+    }
 
-        while self
-            .peek()
-            .is_some_and(|v| ["+", "-"].contains(&v.text.as_str()))
-        {
-            let operator = self.consume(None)?;
-            let op_type = op_type_for_binary_operator(&operator);
-            let right = self.parse_term()?;
-            left = Expression::Binary(op_type, Box::new(left), Box::new(right));
+    // https://en.wikipedia.org/wiki/Operator-precedence_parser
+    fn parse_expression_(&mut self, mut lhs: Expression, min_precedence: usize) -> ParseResult {
+        // while lookahead is a binary operator whose precedence is >= min_precedence
+        while self.peek().is_some_and(|v| v.type_ == TokenType::Operator) {
+            let current_prec = operator_precedence(&self.peek().unwrap().text);
+            if current_prec < min_precedence {
+                break;
+            }
+            let op = self.consume(None)?;
+            dbg!(&current_prec, &min_precedence);
+
+            let op_type = op_type_for_binary_operator(&op);
+            let mut rhs = self.parse_factor()?;
+            // while lookahead is a binary operator whose precedence is greater
+            // than op's, or a right-associative operator whose precedence is
+            // equal to op's
+            while let Some(ahead) = self.peek()
+                && ahead.type_ == TokenType::Operator
+            {
+                let greater_prec = operator_precedence(&ahead.text) > current_prec;
+                if !greater_prec {
+                    break;
+                }
+                let next_prec = current_prec + usize::from(greater_prec);
+                rhs = self.parse_expression_(rhs, next_prec)?;
+            }
+            lhs = Expression::Binary(op_type, Box::new(lhs), Box::new(rhs));
         }
 
-        Ok(left)
+        Ok(lhs)
     }
 }
 
@@ -158,13 +230,13 @@ pub fn parse(tokens: Vec<Token>) -> ParseResult {
     }
     let mut parser = Parser { tokens, pos: 0 };
 
-    let res = parser.parse_expression();
+    let res = parser.parse_expression()?;
 
     if parser.has_remaining_tokens() {
         dbg!(&res);
         Err("There should not be any remaining tokens".to_string())
     } else {
-        res
+        Ok(res)
     }
 }
 
@@ -175,87 +247,216 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    #[allow(clippy::unnecessary_box_returns)]
     fn ident(text: &str) -> Box<Expression> {
         Box::new(Expression::Identifier(text.to_string()))
     }
 
-    #[test]
-    fn simple_addition_works() {
-        let tokens = tokenize("1 + a");
-        dbg!(&tokens);
+    #[allow(clippy::unnecessary_box_returns)]
+    fn literal(n: i64) -> Box<Expression> {
+        Box::new(Expression::Literal(n))
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn assert_parsing_is_successul_and_equal_to(source_code: &str, goal: Expression) {
+        let tokens = tokenize(source_code);
         let result = parse(tokens);
         assert!(result.is_ok(), "{result:?} should not have been an error");
         let tree = result.unwrap();
-        assert_eq!(
-            tree,
+        assert_eq!(tree, goal);
+    }
+
+    fn assert_parsing_fails(source_code: &str) {
+        let tokens = tokenize(source_code);
+        let result = parse(tokens);
+        assert!(result.is_err(), "{result:?} should have been an error");
+    }
+
+    #[test]
+    fn simple_addition_works() {
+        assert_parsing_is_successul_and_equal_to(
+            "1 + a",
             Expression::Binary(
                 BinaryOp::Add,
                 Box::new(Expression::Literal(1)),
-                Box::new(Expression::Identifier("a".to_string()))
-            )
+                Box::new(Expression::Identifier("a".to_string())),
+            ),
         );
     }
 
     #[test]
     fn simple_if_then_works() {
-        let tokens = tokenize("if a then b + c");
-        dbg!(&tokens);
-        let result = parse(tokens);
-        assert!(result.is_ok(), "{result:?} should not have been an error");
-        let tree = result.unwrap();
-        assert_eq!(
-            tree,
+        assert_parsing_is_successul_and_equal_to(
+            "if a then b + c",
             Expression::If(
                 ident("a"),
-                Box::new(Expression::Binary(BinaryOp::Add, ident("b"), ident("c"),)),
-                None
-            )
+                Box::new(Expression::Binary(BinaryOp::Add, ident("b"), ident("c"))),
+                None,
+            ),
         );
     }
 
     #[test]
     fn simple_if_then_else_works() {
-        let tokens = tokenize("if a then b + c else d*x");
-        dbg!(&tokens);
-        let result = parse(tokens);
-        assert!(result.is_ok(), "{result:?} should not have been an error");
-        let tree = result.unwrap();
-        assert_eq!(
-            tree,
+        assert_parsing_is_successul_and_equal_to(
+            "if a then b + c else d*x",
             Expression::If(
                 ident("a"),
-                Box::new(Expression::Binary(BinaryOp::Add, ident("b"), ident("c"),)),
+                Box::new(Expression::Binary(BinaryOp::Add, ident("b"), ident("c"))),
                 Some(Box::new(Expression::Binary(
                     BinaryOp::Mul,
                     ident("d"),
-                    ident("x")
+                    ident("x"),
                 ))),
-            )
+            ),
+        );
+    }
+
+    #[test]
+    fn simple_func_works() {
+        assert_parsing_is_successul_and_equal_to(
+            "f(x, y + z)",
+            Expression::Function(
+                "f".to_string(),
+                vec![
+                    *ident("x"),
+                    Expression::Binary(BinaryOp::Add, ident("y"), ident("z")),
+                ],
+            ),
+        );
+    }
+
+    #[test]
+    fn simple_precedence_works() {
+        assert_parsing_is_successul_and_equal_to(
+            "2*1 + 1",
+            Expression::Binary(
+                BinaryOp::Add,
+                Box::new(Expression::Binary(BinaryOp::Mul, literal(2), literal(1))),
+                literal(1),
+            ),
+        );
+
+        assert_parsing_is_successul_and_equal_to(
+            "1+1 and 2 or 1 == 0",
+            Expression::Binary(
+                BinaryOp::Or,
+                Box::new(Expression::Binary(
+                    BinaryOp::And,
+                    Box::new(Expression::Binary(BinaryOp::Add, literal(1), literal(1))),
+                    literal(2),
+                )),
+                Box::new(Expression::Binary(BinaryOp::Eq, literal(1), literal(0))),
+            ),
+        );
+    }
+
+    #[test]
+    fn complex_precedence_works() {
+        assert_parsing_is_successul_and_equal_to(
+            "2*1 + n*2 % 2 and 2-3 < 4/3 or 1 == 0",
+            Expression::Binary(
+                BinaryOp::Or,
+                Box::new(Expression::Binary(
+                    BinaryOp::And,
+                    Box::new(Expression::Binary(
+                        BinaryOp::Add,
+                        Box::new(Expression::Binary(BinaryOp::Mul, literal(2), literal(1))),
+                        Box::new(Expression::Binary(
+                            BinaryOp::Rem,
+                            Box::new(Expression::Binary(BinaryOp::Mul, ident("n"), literal(2))),
+                            literal(2),
+                        )),
+                    )),
+                    Box::new(Expression::Binary(
+                        BinaryOp::Lt,
+                        Box::new(Expression::Binary(BinaryOp::Sub, literal(2), literal(3))),
+                        Box::new(Expression::Binary(BinaryOp::Div, literal(4), literal(3))),
+                    )),
+                )),
+                Box::new(Expression::Binary(BinaryOp::Eq, literal(1), literal(0))),
+            ),
+        );
+
+        // with parantheses majorly changing the tree
+        assert_parsing_is_successul_and_equal_to(
+            "(2*1 + n*2 % 2 and 2-3 < 4/3 or 1) == 0",
+            Expression::Binary(
+                BinaryOp::Eq,
+                Box::new(Expression::Binary(
+                    BinaryOp::Or,
+                    Box::new(Expression::Binary(
+                        BinaryOp::And,
+                        Box::new(Expression::Binary(
+                            BinaryOp::Add,
+                            Box::new(Expression::Binary(BinaryOp::Mul, literal(2), literal(1))),
+                            Box::new(Expression::Binary(
+                                BinaryOp::Rem,
+                                Box::new(Expression::Binary(BinaryOp::Mul, ident("n"), literal(2))),
+                                literal(2),
+                            )),
+                        )),
+                        Box::new(Expression::Binary(
+                            BinaryOp::Lt,
+                            Box::new(Expression::Binary(BinaryOp::Sub, literal(2), literal(3))),
+                            Box::new(Expression::Binary(BinaryOp::Div, literal(4), literal(3))),
+                        )),
+                    )),
+                    literal(1),
+                )),
+                literal(0),
+            ),
+        );
+    }
+
+    #[test]
+    fn nested_function_calls_work() {
+        assert_parsing_is_successul_and_equal_to(
+            "f(x, g(x), y + 3)",
+            Expression::Function(
+                "f".to_string(),
+                vec![
+                    *ident("x"),
+                    Expression::Function("g".to_string(), vec![*ident("x")]),
+                    Expression::Binary(BinaryOp::Add, ident("y"), literal(3)),
+                ],
+            ),
         );
     }
 
     // #[test]
-    // fn two_expressions_works() {
-    //     let tokens = tokenize("a + b;\n c + d");
-    //     let result = parse(tokens);
-    //     assert!(result.is_err(), "{result:?} should not have been an error");
+    // fn simple_block_works() {
+    //     let tokens = tokenize(
+    //         "{
+    //     f(a);
+    //     x = y;
+    //     f(x)
     // }
+    // ",
+    //     );
+    //     // dbg!(&tokens);
+    //     let result = parse(tokens);
+    //     assert!(result.is_ok(), "{result:?} should not have been an error");
+    //     let tree = result.unwrap();
+    //     assert_eq!(
+    //         tree,
+    //         Expression::Block(vec![Expression::Function(
+    //             "f".to_string(),
+    //             vec![*ident("a")]
+    //         )])
+    //     );
+    // }
+
     #[test]
     fn empty_input_is_an_error() {
-        let tokens = tokenize("");
-        let result = parse(tokens);
-        assert!(result.is_err(), "{result:?} should have been an error");
+        assert_parsing_fails("");
     }
     #[test]
     fn trailing_garbage_is_an_error() {
-        let tokens = tokenize("a + b c");
-        let result = parse(tokens);
-        assert!(result.is_err(), "{result:?} should have been an error");
+        assert_parsing_fails("a + b c");
     }
     #[test]
     fn garbage_at_the_front_is_an_error() {
-        let tokens = tokenize("c a + b");
-        let result = parse(tokens);
-        assert!(result.is_err(), "{result:?} should have been an error");
+        assert_parsing_fails("c a + b");
     }
 }

@@ -116,6 +116,19 @@ pub fn tokenize(source_code: &str) -> Vec<Token> {
     if let Some(current_token) = current_token {
         output.push(current_token);
     }
+
+    // correct some identifier tokens to be keywords. For example "and"/"or"
+    // were parsed as identifiers, but they're actually operators. There is some
+    // inconsistency here, because for example if else and then are not parsed
+    // here, but rather corrected later in the parser. I should probably fix
+    // that (TODO)
+    for token in &mut output {
+        let op_keywords = ["and", "or"];
+        if token.type_ == TokenType::Identifier && op_keywords.contains(&token.text.as_str()) {
+            token.type_ = TokenType::Operator;
+        }
+    }
+
     output
 }
 
