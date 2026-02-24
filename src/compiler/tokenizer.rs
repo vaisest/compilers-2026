@@ -4,15 +4,35 @@ pub enum TokenType {
     Integer,
     Operator,
     Punctuation,
+    Dummy,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-// TODO: the course material suggests making a wildcard codeloc that would be
-// equal to any location
+#[derive(Debug, Clone, Copy)]
 pub struct CodeLoc {
     line: usize,
     col: usize,
 }
+
+impl PartialEq for CodeLoc {
+    fn eq(&self, other: &Self) -> bool {
+        // we use usize max as a wildcard that matches anything. this should
+        // make testing a little bit easier
+        self.line == usize::MAX
+            || other.line == usize::MAX
+            || (self.line == other.line && self.col == other.col)
+    }
+}
+
+impl Default for CodeLoc {
+    fn default() -> Self {
+        Self {
+            line: usize::MAX,
+            col: usize::MAX,
+        }
+    }
+}
+
+impl Eq for CodeLoc {}
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Token {
@@ -21,12 +41,23 @@ pub struct Token {
     pub text: String,
 }
 
+impl Default for Token {
+    fn default() -> Self {
+        Self {
+            type_: TokenType::Dummy,
+            loc: CodeLoc::default(),
+            text: String::default(),
+        }
+    }
+}
+
 fn is_valid_for(token: TokenType, c: char) -> bool {
     match token {
         TokenType::Identifier => c == '_' || c.is_alphanumeric(),
         TokenType::Integer => c.is_numeric(),
         TokenType::Operator => ['*', '+', '-', '/', '<', '>', '=', '!', '%'].contains(&c),
         TokenType::Punctuation => ['(', ')', '{', '}', ',', ';'].contains(&c),
+        TokenType::Dummy => unreachable!(),
     }
 }
 
@@ -109,6 +140,7 @@ pub fn tokenize(source_code: &str) -> Vec<Token> {
                 TokenType::Identifier | TokenType::Integer => {
                     current_token.replace(new_token);
                 }
+                TokenType::Dummy => unreachable!(),
             }
         }
     }

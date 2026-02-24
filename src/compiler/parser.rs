@@ -1,4 +1,4 @@
-use crate::compiler::tokenizer::{Token, TokenType};
+use crate::compiler::tokenizer::{CodeLoc, Token, TokenType};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BinaryOp {
@@ -18,19 +18,87 @@ pub enum BinaryOp {
     Assign,
 }
 #[derive(Debug, PartialEq, Eq)]
-pub enum Expression {
-    Binary(BinaryOp, Box<Expression>, Box<Expression>),
+pub enum ExprKind {
+    Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Literal(i64),
     Identifier(String),
     // condition, then, else
-    If(Box<Expression>, Box<Expression>, Option<Box<Expression>>),
+    If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
     // func identifier, arguments
-    Function(String, Vec<Expression>),
+    Function(String, Vec<Expr>),
     // many expressions, and mark for if the last expression should be returned
     // as a value
-    Block(Vec<Expression>, bool),
+    Block(Vec<Expr>, bool),
     // variable initialisation
-    Local(String, Box<Expression>),
+    Local(String, Box<Expr>),
+}
+
+impl ExprKind {
+    fn binary(op: BinaryOp, lhs: Expr, rhs: Expr) -> Self {
+        ExprKind::Binary(op, Box::new(lhs), Box::new(rhs))
+    }
+
+    fn local(name: String, value: Expr) -> Self {
+        ExprKind::Local(name, Box::new(value))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Expr {
+    kind: ExprKind,
+    loc: CodeLoc,
+}
+
+impl Expr {
+    fn new(kind: ExprKind) -> Self {
+        Expr {
+            kind,
+            loc: CodeLoc::default(),
+        }
+    }
+    fn with_codeloc(kind: ExprKind, loc: CodeLoc) -> Self {
+        Expr { kind, loc }
+    }
+
+    fn ident_or_literal_from_token(token: Token) -> Self {
+        match token.type_ {
+            TokenType::Identifier => {
+                Self::with_codeloc(ExprKind::Identifier(token.text), token.loc)
+            }
+            // it is assumed that these tokens are actually numbers
+            TokenType::Integer => {
+                Self::with_codeloc(ExprKind::Literal(token.text.parse().unwrap()), token.loc)
+            }
+            _ => todo!(
+                "only identifier and integer expressions can be inferred directly from tokens"
+            ),
+        }
+    }
+    fn func_from_token(token: Token, args: Vec<Expr>) -> Self {
+        Self::with_codeloc(ExprKind::Function(token.text, args), token.loc)
+    }
+    fn if_from_token(token: Token, cond: Expr, then: Expr, else_: Option<Expr>) -> Self {
+        Self::with_codeloc(
+            ExprKind::If(
+                Box::new(cond),
+                Box::new(then),
+                else_.and_then(|v| Some(Box::new(v))),
+            ),
+            token.loc,
+        )
+    }
+    fn block_from_token(token: Token, exprs: Vec<Expr>, returns_value: bool) -> Self {
+        Self::with_codeloc(ExprKind::Block(exprs, returns_value), token.loc)
+    }
+    fn local_from_token(token: Token, name: String, expr: Expr) -> Self {
+        Self::with_codeloc(ExprKind::Local(name, Box::new(expr)), token.loc)
+    }
+    fn binary_op_from_token(token: Token, type_: BinaryOp, lhs: Expr, rhs: Expr) -> Self {
+        Self::with_codeloc(
+            ExprKind::Binary(type_, Box::new(lhs), Box::new(rhs)),
+            token.loc,
+        )
+    }
 }
 
 struct Parser {
@@ -73,7 +141,7 @@ fn operator_precedence(op: &str) -> usize {
     }
 }
 
-type ParseResult = Result<Expression, String>;
+type ParseResult = Result<Expr, String>;
 
 impl Parser {
     fn has_remaining_tokens(&self) -> bool {
@@ -103,13 +171,13 @@ impl Parser {
     fn parse_int_literal(&mut self) -> ParseResult {
         let token = self.consume(None)?;
         if token.type_ == TokenType::Integer {
-            Ok(Expression::Literal(token.text.parse().unwrap()))
+            Ok(Expr::new(ExprKind::Literal(token.text.parse().unwrap())))
         } else {
             Err("Unexpected token: expected a literal integer".to_string())
         }
     }
 
-    fn parse_argument_list(&mut self) -> Result<Vec<Expression>, String> {
+    fn parse_argument_list(&mut self) -> Result<Vec<Expr>, String> {
         let mut args = vec![];
         loop {
             args.push(self.parse_expression()?);
@@ -133,27 +201,28 @@ impl Parser {
             self.consume(None)?;
             let args = self.parse_argument_list()?;
             self.consume(Some(&[")"]))?;
-            return Ok(Expression::Function(token.text, args));
+            return Ok(Expr::func_from_token(token, args));
         }
 
-        Ok(Expression::Identifier(token.text.clone()))
+        Ok(Expr::ident_or_literal_from_token(token))
     }
 
     fn parse_if(&mut self) -> ParseResult {
-        self.consume(Some(&["if"]))?;
+        let if_token = self.consume(Some(&["if"]))?;
         let if_expr = self.parse_expression()?;
         self.consume(Some(&["then"]))?;
         let true_expr = self.parse_expression()?;
         if self.peek().is_some_and(|v| v.text == "else") {
             self.consume(Some(&["else"]))?;
             let otherwise_expr = self.parse_expression()?;
-            Ok(Expression::If(
-                Box::new(if_expr),
-                Box::new(true_expr),
-                Some(Box::new(otherwise_expr)),
+            Ok(Expr::if_from_token(
+                if_token,
+                if_expr,
+                true_expr,
+                Some(otherwise_expr),
             ))
         } else {
-            Ok(Expression::If(Box::new(if_expr), Box::new(true_expr), None))
+            Ok(Expr::if_from_token(if_token, if_expr, true_expr, None))
         }
     }
 
@@ -187,16 +256,16 @@ impl Parser {
     }
 
     fn parse_block(&mut self) -> ParseResult {
-        self.consume(Some(&["{"]))?;
+        let block_token = self.consume(Some(&["{"]))?;
         let mut expressions = vec![];
         // indicates if the block returns its last statement's value or not
         let mut had_semicol = true;
         while self.peek().is_some_and(|v| v.text.as_str() != "}") {
             // make { a b } illegal. only blocks are allowed to omit semicolons on non-last expressions
             if !had_semicol
-                && expressions
-                    .last()
-                    .is_some_and(|v| !matches!(v, Expression::Block(..) | Expression::If(..)))
+                && expressions.last().is_some_and(|v: &Expr| {
+                    !matches!(v.kind, ExprKind::Block(..) | ExprKind::If(..))
+                })
             {
                 return Err(format!(
                     "Expected ; following expression in block. Only the blocks or the last expression are allowed to omit semicolons. Instead the last expression was:\n{:?}",
@@ -214,7 +283,11 @@ impl Parser {
             expressions.push(expr);
         }
         self.consume(Some(&["}"]))?;
-        Ok(Expression::Block(expressions, !had_semicol))
+        Ok(Expr::block_from_token(
+            block_token,
+            expressions,
+            !had_semicol,
+        ))
     }
 
     // this can essentially parse everything. generally that means a single
@@ -226,18 +299,18 @@ impl Parser {
     }
 
     fn parse_local(&mut self) -> ParseResult {
-        self.consume(Some(&["var"]))?;
-        let Expression::Identifier(lhs_text) = self.parse_identifier()? else {
+        let token = self.consume(Some(&["var"]))?;
+        let ExprKind::Identifier(lhs_text) = self.parse_identifier()?.kind else {
             unreachable!()
         };
 
         self.consume(Some(&["="]))?;
         let rhs = self.parse_expression()?;
-        Ok(Expression::Local(lhs_text, Box::new(rhs)))
+        Ok(Expr::local_from_token(token, lhs_text, rhs))
     }
 
     // https://en.wikipedia.org/wiki/Operator-precedence_parser
-    fn parse_expression_(&mut self, mut lhs: Expression, min_precedence: usize) -> ParseResult {
+    fn parse_expression_(&mut self, mut lhs: Expr, min_precedence: usize) -> ParseResult {
         // while lookahead is a binary operator whose precedence is >= min_precedence
         while self.peek().is_some_and(|v| v.type_ == TokenType::Operator) {
             let current_prec = operator_precedence(&self.peek().unwrap().text);
@@ -251,17 +324,13 @@ impl Parser {
             if op_type == BinaryOp::Assign {
                 // equals only allows identifiers on the left, or assign operations
                 // that have an identifier on the rhs, because a = b = c is allowed.
-                if !matches!(lhs, Expression::Identifier(_)) {
+                if !matches!(lhs.kind, ExprKind::Identifier(_)) {
                     return Err(format!(
                         "Assignment can only assign to identifiers. Instead found: {lhs:?}"
                     ));
                 }
                 let rhs = self.parse_expression()?;
-                return Ok(Expression::Binary(
-                    BinaryOp::Assign,
-                    Box::new(lhs),
-                    Box::new(rhs),
-                ));
+                return Ok(Expr::binary_op_from_token(op, op_type, lhs, rhs));
             }
 
             let mut rhs = self.parse_factor()?;
@@ -283,7 +352,7 @@ impl Parser {
                 rhs = self.parse_expression_(rhs, next_prec)?;
             }
 
-            lhs = Expression::Binary(op_type, Box::new(lhs), Box::new(rhs));
+            lhs = Expr::binary_op_from_token(op, op_type, lhs, rhs);
         }
 
         Ok(lhs)
@@ -313,17 +382,36 @@ mod tests {
     use super::*;
 
     #[allow(clippy::unnecessary_box_returns)]
-    fn ident(text: &str) -> Box<Expression> {
-        Box::new(Expression::Identifier(text.to_string()))
+    fn ident(text: &str) -> Expr {
+        Expr::ident_or_literal_from_token(Token {
+            type_: TokenType::Identifier,
+            loc: CodeLoc::default(),
+            text: text.to_string(),
+        })
     }
 
     #[allow(clippy::unnecessary_box_returns)]
-    fn literal(n: i64) -> Box<Expression> {
-        Box::new(Expression::Literal(n))
+    fn literal(n: i64) -> Expr {
+        Expr::ident_or_literal_from_token(Token {
+            type_: TokenType::Integer,
+            loc: CodeLoc::default(),
+            text: n.to_string(),
+        })
+    }
+
+    fn func(text: &str, args: Vec<Expr>) -> Expr {
+        Expr::func_from_token(
+            Token {
+                type_: TokenType::Dummy,
+                loc: CodeLoc::default(),
+                text: text.to_string(),
+            },
+            args,
+        )
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    fn assert_parsing_is_successful_and_equal_to(source_code: &str, goal: Expression) {
+    fn assert_parsing_is_successful_and_equal_to(source_code: &str, goal: Expr) {
         let tokens = tokenize(source_code);
         let result = parse(tokens);
         assert!(
@@ -356,11 +444,7 @@ mod tests {
     fn simple_addition_works() {
         assert_parsing_is_successful_and_equal_to(
             "1 + a",
-            Expression::Binary(
-                BinaryOp::Add,
-                Box::new(Expression::Literal(1)),
-                Box::new(Expression::Identifier("a".to_string())),
-            ),
+            Expr::binary_op_from_token(Token::default(), BinaryOp::Add, literal(1), ident("a")),
         );
     }
 
@@ -368,9 +452,10 @@ mod tests {
     fn simple_if_then_works() {
         assert_parsing_is_successful_and_equal_to(
             "if a then b + c",
-            Expression::If(
+            Expr::if_from_token(
+                Token::default(),
                 ident("a"),
-                Box::new(Expression::Binary(BinaryOp::Add, ident("b"), ident("c"))),
+                Expr::binary_op_from_token(Token::default(), BinaryOp::Add, ident("b"), ident("c")),
                 None,
             ),
         );
@@ -380,14 +465,16 @@ mod tests {
     fn simple_if_then_else_works() {
         assert_parsing_is_successful_and_equal_to(
             "if a then b + c else d*x",
-            Expression::If(
+            Expr::if_from_token(
+                Token::default(),
                 ident("a"),
-                Box::new(Expression::Binary(BinaryOp::Add, ident("b"), ident("c"))),
-                Some(Box::new(Expression::Binary(
+                Expr::binary_op_from_token(Token::default(), BinaryOp::Add, ident("b"), ident("c")),
+                Some(Expr::binary_op_from_token(
+                    Token::default(),
                     BinaryOp::Mul,
                     ident("d"),
                     ident("x"),
-                ))),
+                )),
             ),
         );
     }
@@ -396,11 +483,20 @@ mod tests {
     fn simple_func_works() {
         assert_parsing_is_successful_and_equal_to(
             "f(x, y + z)",
-            Expression::Function(
-                "f".to_string(),
+            Expr::func_from_token(
+                Token {
+                    type_: TokenType::Dummy,
+                    loc: CodeLoc::default(),
+                    text: "f".to_string(),
+                },
                 vec![
-                    *ident("x"),
-                    Expression::Binary(BinaryOp::Add, ident("y"), ident("z")),
+                    ident("x"),
+                    Expr::binary_op_from_token(
+                        Token::default(),
+                        BinaryOp::Add,
+                        ident("y"),
+                        ident("z"),
+                    ),
                 ],
             ),
         );
@@ -410,80 +506,125 @@ mod tests {
     fn simple_precedence_works() {
         assert_parsing_is_successful_and_equal_to(
             "2*1 + 1",
-            Expression::Binary(
+            Expr::binary_op_from_token(
+                Token::default(),
                 BinaryOp::Add,
-                Box::new(Expression::Binary(BinaryOp::Mul, literal(2), literal(1))),
+                Expr::binary_op_from_token(Token::default(), BinaryOp::Mul, literal(2), literal(1)),
                 literal(1),
             ),
         );
 
         assert_parsing_is_successful_and_equal_to(
             "1+1 and 2 or 1 == 0",
-            Expression::Binary(
+            Expr::binary_op_from_token(
+                Token::default(),
                 BinaryOp::Or,
-                Box::new(Expression::Binary(
+                Expr::binary_op_from_token(
+                    Token::default(),
                     BinaryOp::And,
-                    Box::new(Expression::Binary(BinaryOp::Add, literal(1), literal(1))),
+                    Expr::binary_op_from_token(
+                        Token::default(),
+                        BinaryOp::Add,
+                        literal(1),
+                        literal(1),
+                    ),
                     literal(2),
-                )),
-                Box::new(Expression::Binary(BinaryOp::Eq, literal(1), literal(0))),
+                ),
+                Expr::binary_op_from_token(Token::default(), BinaryOp::Eq, literal(1), literal(0)),
             ),
         );
     }
 
     #[test]
     fn complex_precedence_works() {
+        let and = Expr::binary_op_from_token(
+            Token::default(),
+            BinaryOp::And,
+            Expr::binary_op_from_token(
+                Token::default(),
+                BinaryOp::Add,
+                Expr::binary_op_from_token(Token::default(), BinaryOp::Mul, literal(2), literal(1)),
+                Expr::binary_op_from_token(
+                    Token::default(),
+                    BinaryOp::Rem,
+                    Expr::binary_op_from_token(
+                        Token::default(),
+                        BinaryOp::Mul,
+                        ident("n"),
+                        literal(2),
+                    ),
+                    literal(2),
+                ),
+            ),
+            Expr::binary_op_from_token(
+                Token::default(),
+                BinaryOp::Lt,
+                Expr::binary_op_from_token(Token::default(), BinaryOp::Sub, literal(2), literal(3)),
+                Expr::binary_op_from_token(Token::default(), BinaryOp::Div, literal(4), literal(3)),
+            ),
+        );
         assert_parsing_is_successful_and_equal_to(
             "2*1 + n*2 % 2 and 2-3 < 4/3 or 1 == 0",
-            Expression::Binary(
+            Expr::binary_op_from_token(
+                Token::default(),
                 BinaryOp::Or,
-                Box::new(Expression::Binary(
-                    BinaryOp::And,
-                    Box::new(Expression::Binary(
-                        BinaryOp::Add,
-                        Box::new(Expression::Binary(BinaryOp::Mul, literal(2), literal(1))),
-                        Box::new(Expression::Binary(
-                            BinaryOp::Rem,
-                            Box::new(Expression::Binary(BinaryOp::Mul, ident("n"), literal(2))),
-                            literal(2),
-                        )),
-                    )),
-                    Box::new(Expression::Binary(
-                        BinaryOp::Lt,
-                        Box::new(Expression::Binary(BinaryOp::Sub, literal(2), literal(3))),
-                        Box::new(Expression::Binary(BinaryOp::Div, literal(4), literal(3))),
-                    )),
-                )),
-                Box::new(Expression::Binary(BinaryOp::Eq, literal(1), literal(0))),
+                and,
+                Expr::binary_op_from_token(Token::default(), BinaryOp::Eq, literal(1), literal(0)),
             ),
         );
 
         // with parantheses majorly changing the tree
         assert_parsing_is_successful_and_equal_to(
             "(2*1 + n*2 % 2 and 2-3 < 4/3 or 1) == 0",
-            Expression::Binary(
+            Expr::binary_op_from_token(
+                Token::default(),
                 BinaryOp::Eq,
-                Box::new(Expression::Binary(
+                Expr::binary_op_from_token(
+                    Token::default(),
                     BinaryOp::Or,
-                    Box::new(Expression::Binary(
+                    Expr::binary_op_from_token(
+                        Token::default(),
                         BinaryOp::And,
-                        Box::new(Expression::Binary(
+                        Expr::binary_op_from_token(
+                            Token::default(),
                             BinaryOp::Add,
-                            Box::new(Expression::Binary(BinaryOp::Mul, literal(2), literal(1))),
-                            Box::new(Expression::Binary(
-                                BinaryOp::Rem,
-                                Box::new(Expression::Binary(BinaryOp::Mul, ident("n"), literal(2))),
+                            Expr::binary_op_from_token(
+                                Token::default(),
+                                BinaryOp::Mul,
                                 literal(2),
-                            )),
-                        )),
-                        Box::new(Expression::Binary(
+                                literal(1),
+                            ),
+                            Expr::binary_op_from_token(
+                                Token::default(),
+                                BinaryOp::Rem,
+                                Expr::binary_op_from_token(
+                                    Token::default(),
+                                    BinaryOp::Mul,
+                                    ident("n"),
+                                    literal(2),
+                                ),
+                                literal(2),
+                            ),
+                        ),
+                        Expr::binary_op_from_token(
+                            Token::default(),
                             BinaryOp::Lt,
-                            Box::new(Expression::Binary(BinaryOp::Sub, literal(2), literal(3))),
-                            Box::new(Expression::Binary(BinaryOp::Div, literal(4), literal(3))),
-                        )),
-                    )),
+                            Expr::binary_op_from_token(
+                                Token::default(),
+                                BinaryOp::Sub,
+                                literal(2),
+                                literal(3),
+                            ),
+                            Expr::binary_op_from_token(
+                                Token::default(),
+                                BinaryOp::Div,
+                                literal(4),
+                                literal(3),
+                            ),
+                        ),
+                    ),
                     literal(1),
-                )),
+                ),
                 literal(0),
             ),
         );
@@ -493,12 +634,28 @@ mod tests {
     fn nested_function_calls_work() {
         assert_parsing_is_successful_and_equal_to(
             "f(x, g(x), y + 3)",
-            Expression::Function(
-                "f".to_string(),
+            Expr::func_from_token(
+                Token {
+                    type_: TokenType::Dummy,
+                    loc: CodeLoc::default(),
+                    text: "f".to_string(),
+                },
                 vec![
-                    *ident("x"),
-                    Expression::Function("g".to_string(), vec![*ident("x")]),
-                    Expression::Binary(BinaryOp::Add, ident("y"), literal(3)),
+                    ident("x"),
+                    Expr::func_from_token(
+                        Token {
+                            type_: TokenType::Dummy,
+                            loc: CodeLoc::default(),
+                            text: "g".to_string(),
+                        },
+                        vec![ident("x")],
+                    ),
+                    Expr::binary_op_from_token(
+                        Token::default(),
+                        BinaryOp::Add,
+                        ident("y"),
+                        literal(3),
+                    ),
                 ],
             ),
         );
@@ -514,12 +671,18 @@ mod tests {
         f(x)
     }
     ",
-            Expression::Block(
+            Expr::block_from_token(
+                Token::default(),
                 vec![
-                    Expression::Function("f".to_string(), vec![*ident("a")]),
-                    Expression::Function("test".to_string(), vec![*ident("b")]),
-                    Expression::Binary(BinaryOp::Add, literal(2), literal(2)),
-                    Expression::Function("f".to_string(), vec![*ident("x")]),
+                    func("f", vec![ident("a")]),
+                    func("test", vec![ident("b")]),
+                    Expr::binary_op_from_token(
+                        Token::default(),
+                        BinaryOp::Add,
+                        literal(2),
+                        literal(2),
+                    ),
+                    func("f", vec![ident("x")]),
                 ],
                 true,
             ),
@@ -528,17 +691,26 @@ mod tests {
 
     #[test]
     fn empty_block_works() {
-        assert_parsing_is_successful_and_equal_to("{}", Expression::Block(vec![], false));
+        assert_parsing_is_successful_and_equal_to(
+            "{}",
+            Expr::block_from_token(Token::default(), vec![], false),
+        );
     }
 
     #[test]
     fn assignment_works() {
         assert_parsing_is_successful_and_equal_to(
             "x = lol+20",
-            Expression::Binary(
+            Expr::binary_op_from_token(
+                Token::default(),
                 BinaryOp::Assign,
                 ident("x"),
-                Box::new(Expression::Binary(BinaryOp::Add, ident("lol"), literal(20))),
+                Expr::binary_op_from_token(
+                    Token::default(),
+                    BinaryOp::Add,
+                    ident("lol"),
+                    literal(20),
+                ),
             ),
         );
 
@@ -546,14 +718,21 @@ mod tests {
 
         assert_parsing_is_successful_and_equal_to(
             "a = b = c*123",
-            Expression::Binary(
+            Expr::binary_op_from_token(
+                Token::default(),
                 BinaryOp::Assign,
                 ident("a"),
-                Box::new(Expression::Binary(
+                Expr::binary_op_from_token(
+                    Token::default(),
                     BinaryOp::Assign,
                     ident("b"),
-                    Box::new(Expression::Binary(BinaryOp::Mul, ident("c"), literal(123))),
-                )),
+                    Expr::binary_op_from_token(
+                        Token::default(),
+                        BinaryOp::Mul,
+                        ident("c"),
+                        literal(123),
+                    ),
+                ),
             ),
         );
     }
@@ -562,13 +741,15 @@ mod tests {
     fn var_initialisation_works() {
         assert_parsing_is_successful_and_equal_to(
             "var x = 123 + 5434",
-            Expression::Local(
+            Expr::local_from_token(
+                Token::default(),
                 "x".to_string(),
-                Box::new(Expression::Binary(
+                Expr::binary_op_from_token(
+                    Token::default(),
                     BinaryOp::Add,
                     literal(123),
                     literal(5434),
-                )),
+                ),
             ),
         );
     }
@@ -585,6 +766,8 @@ mod tests {
         assert_parsing_is_successful("{ if true then { a } else { b } c }");
         assert_parsing_is_successful("x = { { f(a) } { b } }");
     }
+
+    // TODO: unary operators, typed variable (not sure these are needed?), while-loop
 
     #[test]
     fn empty_input_is_an_error() {
