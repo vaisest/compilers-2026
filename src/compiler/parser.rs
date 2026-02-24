@@ -26,8 +26,9 @@ pub enum Expression {
     If(Box<Expression>, Box<Expression>, Option<Box<Expression>>),
     // func identifier, arguments
     Function(String, Vec<Expression>),
-    // many expressions, and possibly one last result expression
-    Block(Vec<Expression>, Box<Option<Expression>>),
+    // many expressions, and mark for if the last expression should be returned
+    // as a value
+    Block(Vec<Expression>, bool),
     // variable initialisation
     Local(String, Box<Expression>),
 }
@@ -188,21 +189,32 @@ impl Parser {
     fn parse_block(&mut self) -> ParseResult {
         self.consume(Some(&["{"]))?;
         let mut expressions = vec![];
-        let mut return_expr = None;
+        // indicates if the block returns its last statement's value or not
+        let mut had_semicol = true;
         while self.peek().is_some_and(|v| v.text.as_str() != "}") {
+            // make { a b } illegal. only blocks are allowed to omit semicolons on non-last expressions
+            if !had_semicol
+                && expressions
+                    .last()
+                    .is_some_and(|v| !matches!(v, Expression::Block(..) | Expression::If(..)))
+            {
+                return Err(format!(
+                    "Expected ; following expression in block. Only the blocks or the last expression are allowed to omit semicolons. Instead the last expression was:\n{:?}",
+                    expressions.last().unwrap()
+                ));
+            }
+
             let expr = self.parse_expression()?;
             // the last ; is optional as it controls whether the last expression
             // is returned. This means we expect either a } or ; after each expression
-            if self.peek().is_some_and(|v| v.text == ";") {
-                self.consume(None)?;
-                expressions.push(expr);
-            } else {
-                return_expr.replace(expr);
-                break;
+            had_semicol = self.peek().is_some_and(|v| v.text == ";");
+            if had_semicol {
+                self.consume(Some(&[";"]))?;
             }
+            expressions.push(expr);
         }
         self.consume(Some(&["}"]))?;
-        Ok(Expression::Block(expressions, Box::new(return_expr)))
+        Ok(Expression::Block(expressions, !had_semicol))
     }
 
     // this can essentially parse everything. generally that means a single
@@ -314,7 +326,10 @@ mod tests {
     fn assert_parsing_is_successful_and_equal_to(source_code: &str, goal: Expression) {
         let tokens = tokenize(source_code);
         let result = parse(tokens);
-        assert!(result.is_ok(), "{result:?} should not have been an error");
+        assert!(
+            result.is_ok(),
+            "{result:?} should not have been an error when parsing:\n{source_code}"
+        );
         let tree = result.unwrap();
         assert_eq!(tree, goal);
     }
@@ -322,7 +337,19 @@ mod tests {
     fn assert_parsing_fails(source_code: &str) {
         let tokens = tokenize(source_code);
         let result = parse(tokens);
-        assert!(result.is_err(), "{result:?} should have been an error");
+        assert!(
+            result.is_err(),
+            "{result:?} should have been an error when parsing:\n{source_code}"
+        );
+    }
+
+    fn assert_parsing_is_successful(source_code: &str) {
+        let tokens = tokenize(source_code);
+        let result = parse(tokens);
+        assert!(
+            result.is_ok(),
+            "{result:?} should not have been an error when parsing:\n{source_code}"
+        );
     }
 
     #[test]
@@ -492,18 +519,16 @@ mod tests {
                     Expression::Function("f".to_string(), vec![*ident("a")]),
                     Expression::Function("test".to_string(), vec![*ident("b")]),
                     Expression::Binary(BinaryOp::Add, literal(2), literal(2)),
+                    Expression::Function("f".to_string(), vec![*ident("x")]),
                 ],
-                Box::new(Some(Expression::Function(
-                    "f".to_string(),
-                    vec![*ident("x")],
-                ))),
+                true,
             ),
         );
     }
 
     #[test]
     fn empty_block_works() {
-        assert_parsing_is_successful_and_equal_to("{}", Expression::Block(vec![], Box::new(None)));
+        assert_parsing_is_successful_and_equal_to("{}", Expression::Block(vec![], false));
     }
 
     #[test]
@@ -546,6 +571,19 @@ mod tests {
                 )),
             ),
         );
+    }
+
+    #[test]
+    fn blocks_behave_properly() {
+        assert_parsing_is_successful("{ { a } }");
+        assert_parsing_is_successful("{ { a } { b } }");
+        assert_parsing_fails("{ a b }");
+        assert_parsing_is_successful("{ if true then { a } b }");
+        assert_parsing_is_successful("{ if true then { a }; b }");
+        assert_parsing_fails("{ if true then { a } b c }");
+        assert_parsing_is_successful("{ if true then { a } b; c }");
+        assert_parsing_is_successful("{ if true then { a } else { b } c }");
+        assert_parsing_is_successful("x = { { f(a) } { b } }");
     }
 
     #[test]
