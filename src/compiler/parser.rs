@@ -25,7 +25,7 @@ pub enum ExprKind {
     // condition, then, else
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
     // condition, then
-    // While(Box<Expr>, Box<Expr>),
+    While(Box<Expr>, Box<Expr>),
     // func identifier, arguments
     Function(String, Vec<Expr>),
     // many expressions, and mark for if the last expression should be returned
@@ -86,6 +86,9 @@ impl Expr {
             ExprKind::Binary(type_, Box::new(lhs), Box::new(rhs)),
             token.loc,
         )
+    }
+    fn while_from_token(token: &Token, cond: Expr, then: Expr) -> Self {
+        Self::with_codeloc(ExprKind::While(Box::new(cond), Box::new(then)), token.loc)
     }
 }
 
@@ -214,10 +217,21 @@ impl Parser {
         }
     }
 
+    fn parse_while(&mut self) -> ParseResult {
+        let while_token = self.consume(Some(&["while"]))?;
+        let if_expr = self.parse_expression()?;
+        self.consume(Some(&["do"]))?;
+        self.consume(Some(&["{"]))?;
+        let true_block = self.parse_expression()?;
+        self.consume(Some(&["}"]))?;
+        Ok(Expr::while_from_token(&while_token, if_expr, true_block))
+    }
+
     fn parse_factor(&mut self) -> ParseResult {
         let peeked = self.peek().unwrap();
         match (peeked.type_, peeked.text.as_str()) {
             (TokenType::Identifier, "if") => self.parse_if(),
+            (TokenType::Identifier, "while") => self.parse_while(),
             (TokenType::Identifier, "var") => self.parse_local(),
             (TokenType::Identifier, text) => {
                 if text == "then" || text == "else" {
@@ -427,6 +441,9 @@ mod tests {
             "{result:?} should not have been an error when parsing:\n{source_code}"
         );
     }
+
+    // in hindsight: I really should have had something to build the comparison
+    // AST from a string representation, because writing theses tests is awful
 
     #[test]
     fn simple_addition_works() {
@@ -768,6 +785,30 @@ mod tests {
                     BinaryOp::Add,
                     literal(123),
                     literal(5434),
+                ),
+            ),
+        );
+    }
+
+    #[test]
+    fn while_works() {
+        assert_parsing_is_successful_and_equal_to(
+            "while n > 1 do {
+    n = n - 2
+}",
+            Expr::while_from_token(
+                &Token::default(),
+                Expr::binary_op_from_token(&Token::default(), BinaryOp::Gt, ident("n"), literal(1)),
+                Expr::binary_op_from_token(
+                    &Token::default(),
+                    BinaryOp::Assign,
+                    ident("n"),
+                    Expr::binary_op_from_token(
+                        &Token::default(),
+                        BinaryOp::Sub,
+                        ident("n"),
+                        literal(2),
+                    ),
                 ),
             ),
         );
