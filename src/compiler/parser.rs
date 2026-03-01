@@ -30,6 +30,7 @@ pub enum UnaryOp {
 pub enum ExprKind {
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Literal(i64),
+    LiteralBool(bool),
     Identifier(String),
     // condition, then, else
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
@@ -71,7 +72,14 @@ impl Expr {
     fn ident_or_literal_from_token(token: Token) -> Self {
         match token.type_ {
             TokenType::Identifier => {
-                Self::with_codeloc(ExprKind::Identifier(token.text), token.loc)
+                if matches!(token.text.as_str(), "false" | "true") {
+                    Self::with_codeloc(
+                        ExprKind::LiteralBool(token.text.parse().unwrap()),
+                        token.loc,
+                    )
+                } else {
+                    Self::with_codeloc(ExprKind::Identifier(token.text), token.loc)
+                }
             }
             // it is assumed that these tokens are actually numbers
             TokenType::Integer => {
@@ -200,6 +208,20 @@ impl Parser {
         }
     }
 
+    fn parse_bool_literal(&mut self) -> ParseResult {
+        let token = self.consume(Some(&["false", "true"]))?;
+        if token.type_ == TokenType::Identifier {
+            Ok(Expr::new(ExprKind::LiteralBool(
+                token.text.parse().unwrap(),
+            )))
+        } else {
+            Err(format!(
+                "Unexpected token: expected a literal integer. Instead found {}",
+                token.text
+            ))
+        }
+    }
+
     fn parse_argument_list(&mut self) -> Result<Vec<Expr>, String> {
         let mut args = vec![];
         loop {
@@ -273,8 +295,9 @@ impl Parser {
         match (peeked.type_, peeked.text.as_str()) {
             (TokenType::Identifier, "if") => self.parse_if(),
             (TokenType::Identifier, "while") => self.parse_while(),
-            (TokenType::Operator, _) | (TokenType::Identifier, "not") => self.parse_unary(),
             (TokenType::Identifier, "var") => self.parse_local(),
+            (TokenType::Identifier, "true" | "false") => self.parse_bool_literal(),
+            (TokenType::Operator, _) | (TokenType::Identifier, "not") => self.parse_unary(),
             (TokenType::Identifier, text) => {
                 if text == "then" || text == "else" {
                     Err("Expected a variable name, not a then or else".to_string())
@@ -479,6 +502,15 @@ mod tests {
             type_: TokenType::Integer,
             loc: CodeLoc::default(),
             text: n.to_string(),
+        })
+    }
+
+    #[allow(clippy::unnecessary_box_returns)]
+    fn literal_bool(b: bool) -> Expr {
+        Expr::ident_or_literal_from_token(Token {
+            type_: TokenType::Identifier,
+            loc: CodeLoc::default(),
+            text: b.to_string(),
         })
     }
 
@@ -1014,5 +1046,25 @@ mod tests {
             true,
         );
         assert_parsing_is_successful_and_equal_to("var f: (Int) => Unit = print_int; f(123)", goal);
+    }
+
+    #[test]
+    fn bool_literals_work() {
+        assert_parsing_is_successful_and_equal_to(
+            "var x = false; x or true",
+            Expr::block_from_token(
+                &Token::default(),
+                vec![
+                    Expr::local_from_token(&Token::default(), "x".to_string(), literal_bool(false)),
+                    Expr::binary_op_from_token(
+                        &Token::default(),
+                        BinaryOp::Or,
+                        ident("x"),
+                        literal_bool(true),
+                    ),
+                ],
+                true,
+            ),
+        );
     }
 }

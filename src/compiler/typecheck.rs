@@ -91,23 +91,31 @@ impl TypeChecker {
         }
         let res = match &node.kind {
             ExprKind::Literal(_) => Type::Int,
+            ExprKind::LiteralBool(_) => Type::Bool,
             ExprKind::Local(name, rhs) => {
                 let rhs_type = self.typecheck(rhs.as_ref(), depth)?;
-                dbg!(name, &depth);
+
+                if let Some(t) = &node.type_
+                    && *t != rhs_type
+                {
+                    return Err(format!(
+                        "Variable assignment does not match variable type declaration. Expected {t:?}. Instead found {rhs_type:?}"
+                    ));
+                }
                 self.locals[depth].insert(name.clone(), rhs_type.clone());
                 rhs_type
             }
             ExprKind::Binary(bin_op, lhs, rhs) => {
-                let t2 = self.typecheck(rhs, depth)?;
+                let rhs_type = self.typecheck(rhs, depth)?;
                 match bin_op {
                     // equality and assignment are handled as exceptions
                     BinaryOp::Eq | BinaryOp::Neq => {
-                        let t1 = self.typecheck(lhs, depth)?;
-                        if t1 == t2 {
+                        let lhs_type = self.typecheck(lhs, depth)?;
+                        if lhs_type == rhs_type {
                             Type::Bool
                         } else {
                             return Err(format!(
-                                "Expected types of lhs and rhs of == or != to be equal. Instead found {t1:?} and {t2:?}"
+                                "Expected types of lhs and rhs of == or != to be equal. Instead found {lhs_type:?} and {rhs_type:?}"
                             ));
                         }
                     }
@@ -115,23 +123,27 @@ impl TypeChecker {
                         let ExprKind::Identifier(var_name) = &lhs.kind else {
                             unreachable!()
                         };
-                        self.locals[depth].insert(var_name.clone(), t2.clone());
-                        t2
+                        let var_type = self.get_symbol(var_name, depth)?;
+                        if *var_type != rhs_type {
+                            return Err(format!(
+                                "Assignment type does not match variable type. Expected {var_type:?}. Instead found {rhs_type:?}."
+                            ));
+                        }
+                        rhs_type
                     }
                     // otherwise operator type signatures are fetched from the
                     // global table
                     _ => {
-                        dbg!(bin_op.to_string());
-                        let t1 = self.typecheck(lhs.as_ref(), depth)?;
+                        let lhs_type = self.typecheck(lhs.as_ref(), depth)?;
                         let Type::Func(expected_inputs, output_type) =
                             self.locals[0].get(&bin_op.to_string()).unwrap()
                         else {
                             unreachable!()
                         };
 
-                        if t1 != expected_inputs[0] || t2 != expected_inputs[1] {
+                        if lhs_type != expected_inputs[0] || rhs_type != expected_inputs[1] {
                             return Err(format!(
-                                "Received incorrect input types for operator {}. Expected {:?} and {:?}. Instead found {t1:?} and {t2:?}",
+                                "Received incorrect input types for operator {}. Expected {:?} and {:?}. Instead found {lhs_type:?} and {rhs_type:?}",
                                 bin_op, expected_inputs[0], expected_inputs[1]
                             ));
                         }
@@ -241,26 +253,38 @@ mod tests {
         parse(tokenize(source_code)).unwrap()
     }
 
+    fn check_and_assert_eq(source_code: &str, goal: Type) {
+        assert_eq!(typecheck(&parse_source(source_code)), Ok(goal));
+    }
+
+    fn check_and_assert_err(source_code: &str) {
+        assert!(typecheck(&parse_source(source_code)).is_err());
+    }
+
     #[test]
     fn basic_operators_work() {
-        assert!(typecheck(&parse_source("1+1")).is_ok_and(|v| v == Type::Int));
-        assert_eq!(typecheck(&parse_source("var a = 2;1+a")), Ok(Type::Int));
+        check_and_assert_eq("1+1", Type::Int);
+        check_and_assert_eq("var a = 2;1+a", Type::Int);
+        check_and_assert_eq("var x = false; x or true", Type::Bool);
 
-        assert!(typecheck(&parse_source("1+a")).is_err());
+        check_and_assert_err("1+a");
+        // check_and_assert_err("var a: Bool = 0;1<a");
     }
 
     #[test]
     fn function_signatures_work() {
-        assert_eq!(
-            typecheck(&parse_source(
-                "{ var f: (Int) => Unit = print_int; f(123) }"
-            )),
-            Ok(Type::Unit)
-        );
+        check_and_assert_eq("{ var f: (Int) => Unit = print_int; f(123) }", Type::Unit);
 
-        assert_eq!(
-            typecheck(&parse_source("{ var f: (Int) => Unit = print_int; f }")),
-            Ok(Type::Func(vec![Type::Int], Box::new(Type::Unit)))
+        check_and_assert_eq(
+            "{ var f: (Int) => Unit = print_int; f }",
+            Type::Func(vec![Type::Int], Box::new(Type::Unit)),
         );
+    }
+
+    #[test]
+    fn local_type_checking_works() {
+        check_and_assert_err("{ var f: (Int) => Int = print_int; f }");
+        check_and_assert_err("var x: Int = 0; x = x < 2");
+        check_and_assert_eq("var x: Bool = false; x = 1 < 2; x", Type::Bool);
     }
 }
