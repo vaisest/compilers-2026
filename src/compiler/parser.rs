@@ -18,6 +18,11 @@ pub enum BinaryOp {
     Assign,
 }
 #[derive(Debug, PartialEq, Eq)]
+pub enum UnaryOp {
+    Not,
+    Minus,
+}
+#[derive(Debug, PartialEq, Eq)]
 pub enum ExprKind {
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Literal(i64),
@@ -28,6 +33,7 @@ pub enum ExprKind {
     While(Box<Expr>, Box<Expr>),
     // func identifier, arguments
     Function(String, Vec<Expr>),
+    Unary(UnaryOp, Box<Expr>),
     // many expressions, and mark for if the last expression should be returned
     // as a value
     Block(Vec<Expr>, bool),
@@ -87,6 +93,9 @@ impl Expr {
             token.loc,
         )
     }
+    fn unary_op_from_token(token: &Token, type_: UnaryOp, rhs: Expr) -> Self {
+        Self::with_codeloc(ExprKind::Unary(type_, Box::new(rhs)), token.loc)
+    }
     fn while_from_token(token: &Token, cond: Expr, then: Expr) -> Self {
         Self::with_codeloc(ExprKind::While(Box::new(cond), Box::new(then)), token.loc)
     }
@@ -97,6 +106,7 @@ struct Parser {
     pos: usize,
 }
 
+// these two should probably be implemented as a from string operation
 fn op_type_for_binary_operator(operator: &Token) -> BinaryOp {
     assert!(operator.type_ == TokenType::Operator);
     match operator.text.as_str() {
@@ -114,6 +124,18 @@ fn op_type_for_binary_operator(operator: &Token) -> BinaryOp {
         "<=" => BinaryOp::Leq,
         ">=" => BinaryOp::Geq,
         "=" => BinaryOp::Assign,
+        _ => todo!(),
+    }
+}
+
+fn op_type_for_unary_operator(operator: &Token) -> UnaryOp {
+    assert!(matches!(
+        operator.type_,
+        TokenType::Operator | TokenType::Identifier
+    ));
+    match operator.text.as_str() {
+        "-" => UnaryOp::Minus,
+        "not" => UnaryOp::Not,
         _ => todo!(),
     }
 }
@@ -226,12 +248,22 @@ impl Parser {
         self.consume(Some(&["}"]))?;
         Ok(Expr::while_from_token(&while_token, if_expr, true_block))
     }
+    fn parse_unary(&mut self) -> ParseResult {
+        let op_token = self.consume(Some(&["-", "not"]))?;
+        Ok(Expr::unary_op_from_token(
+            &op_token,
+            op_type_for_unary_operator(&op_token),
+            self.parse_factor()?,
+        ))
+    }
 
     fn parse_factor(&mut self) -> ParseResult {
         let peeked = self.peek().unwrap();
+        // key words are handled here
         match (peeked.type_, peeked.text.as_str()) {
             (TokenType::Identifier, "if") => self.parse_if(),
             (TokenType::Identifier, "while") => self.parse_while(),
+            (TokenType::Operator, _) | (TokenType::Identifier, "not") => self.parse_unary(),
             (TokenType::Identifier, "var") => self.parse_local(),
             (TokenType::Identifier, text) => {
                 if text == "then" || text == "else" {
@@ -815,6 +847,50 @@ mod tests {
     }
 
     #[test]
+    fn unary_works() {
+        assert_parsing_is_successful_and_equal_to(
+            "-E",
+            Expr::unary_op_from_token(&Token::default(), UnaryOp::Minus, ident("E")),
+        );
+        assert_parsing_is_successful_and_equal_to(
+            "E = not not E",
+            Expr::binary_op_from_token(
+                &Token::default(),
+                BinaryOp::Assign,
+                ident("E"),
+                Expr::unary_op_from_token(
+                    &Token::default(),
+                    UnaryOp::Not,
+                    Expr::unary_op_from_token(&Token::default(), UnaryOp::Not, ident("E")),
+                ),
+            ),
+        );
+
+        assert_parsing_is_successful_and_equal_to(
+            "A - (--E)",
+            Expr::binary_op_from_token(
+                &Token::default(),
+                BinaryOp::Sub,
+                ident("A"),
+                Expr::unary_op_from_token(
+                    &Token::default(),
+                    UnaryOp::Minus,
+                    Expr::unary_op_from_token(&Token::default(), UnaryOp::Minus, ident("E")),
+                ),
+            ),
+        );
+
+        assert_parsing_is_successful_and_equal_to(
+            "not (A > B)",
+            Expr::unary_op_from_token(
+                &Token::default(),
+                UnaryOp::Not,
+                Expr::binary_op_from_token(&Token::default(), BinaryOp::Gt, ident("A"), ident("B")),
+            ),
+        );
+    }
+
+    #[test]
     fn blocks_behave_properly() {
         assert_parsing_is_successful("{ { a } }");
         assert_parsing_is_successful("{ { a } { b } }");
@@ -827,7 +903,12 @@ mod tests {
         assert_parsing_is_successful("x = { { f(a) } { b } }");
     }
 
-    // TODO: unary operators, typed variable (not sure these are needed?), while-loop
+    #[test]
+    fn other_specifics_behave_properly() {
+        assert_parsing_is_successful("1 + if true then 2 else 3");
+    }
+
+    // TODO: unary operators, typed variable (not sure these are needed?)
 
     #[test]
     fn empty_input_is_an_error() {
