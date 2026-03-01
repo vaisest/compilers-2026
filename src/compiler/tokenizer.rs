@@ -64,6 +64,15 @@ fn is_valid_for(token: TokenType, c: char) -> bool {
 pub fn tokenize(source_code: &str) -> Vec<Token> {
     let mut output: Vec<Token> = vec![];
 
+    // we output a dummy block to simplify handling top-level statements. the
+    // programs can have multiple top-level expressions, which are treated as a
+    // block, despite not requiring curly braces
+    output.push(Token {
+        type_: TokenType::Punctuation,
+        loc: CodeLoc { line: 0, col: 0 },
+        text: "{".to_string(),
+    });
+
     let mut idx = 0;
     let chars = source_code.chars().collect::<Vec<_>>();
     let mut line = 0usize;
@@ -119,12 +128,13 @@ pub fn tokenize(source_code: &str) -> Vec<Token> {
                 '_' | 'a'..='z' | 'A'..='Z' => TokenType::Identifier,
                 first @ ('*' | '+' | '-' | '/' | '<' | '>' | '=' | '!' | '%') => {
                     let next = chars.get(idx + 1);
-                    if let ('=' | '!' | '<' | '>', Some('=')) = (first, next) {
-                        text.push('=');
+                    // handle == and => (eq and type signature arrow)
+                    if let ('=' | '!' | '<' | '>', Some('=' | '>')) = (first, next) {
+                        text.push(*next.unwrap());
                     }
                     TokenType::Operator
                 }
-                '(' | ')' | '{' | '}' | ',' | ';' => TokenType::Punctuation,
+                '(' | ')' | '{' | '}' | ',' | ';' | ':' => TokenType::Punctuation,
                 a => todo!("character '{a}' is not recognized as part of any token"),
             };
 
@@ -161,6 +171,12 @@ pub fn tokenize(source_code: &str) -> Vec<Token> {
         }
     }
 
+    output.push(Token {
+        type_: TokenType::Punctuation,
+        loc: CodeLoc { line, col },
+        text: "}".to_string(),
+    });
+
     output
 }
 
@@ -181,6 +197,11 @@ mod tests {
             tokenize(&input),
             vec![
                 Token {
+                    loc: CodeLoc::default(),
+                    type_: TokenType::Punctuation,
+                    text: "{".to_string()
+                },
+                Token {
                     loc: CodeLoc { line: 0, col: 0 },
                     type_: TokenType::Identifier,
                     text: "if".to_string()
@@ -194,6 +215,11 @@ mod tests {
                     loc: CodeLoc { line: 1, col: 0 },
                     type_: TokenType::Identifier,
                     text: "while".to_string()
+                },
+                Token {
+                    loc: CodeLoc::default(),
+                    type_: TokenType::Punctuation,
+                    text: "}".to_string()
                 }
             ]
         );
@@ -207,6 +233,11 @@ mod tests {
         assert_eq!(
             tokenize(&input),
             vec![
+                Token {
+                    loc: CodeLoc::default(),
+                    type_: TokenType::Punctuation,
+                    text: "{".to_string()
+                },
                 Token {
                     loc: CodeLoc { line: 1, col: 0 },
                     type_: TokenType::Identifier,
@@ -226,6 +257,11 @@ mod tests {
                     loc: CodeLoc { line: 1, col: 13 },
                     type_: TokenType::Punctuation,
                     text: ")".to_string()
+                },
+                Token {
+                    loc: CodeLoc::default(),
+                    type_: TokenType::Punctuation,
+                    text: "}".to_string()
                 }
             ]
         );
@@ -237,6 +273,11 @@ mod tests {
         assert_eq!(
             tokenize(&input),
             vec![
+                Token {
+                    loc: CodeLoc::default(),
+                    type_: TokenType::Punctuation,
+                    text: "{".to_string()
+                },
                 Token {
                     loc: CodeLoc { line: 0, col: 0 },
                     type_: TokenType::Identifier,
@@ -306,6 +347,11 @@ mod tests {
                     loc: CodeLoc { line: 2, col: 0 },
                     type_: TokenType::Punctuation,
                     text: "}".to_string()
+                },
+                Token {
+                    loc: CodeLoc::default(),
+                    type_: TokenType::Punctuation,
+                    text: "}".to_string()
                 }
             ]
         );
@@ -332,6 +378,7 @@ while n > 1 do {
         assert_eq!(
             tokens_as_text_vec(&tokenize(input)),
             vec![
+                "{",
                 "var",
                 "not",
                 "=",
@@ -381,6 +428,7 @@ while n > 1 do {
                 "n",
                 ")",
                 ";",
+                "}",
                 "}",
             ],
         );

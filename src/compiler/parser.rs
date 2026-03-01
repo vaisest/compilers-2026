@@ -1,6 +1,10 @@
-use crate::compiler::tokenizer::{CodeLoc, Token, TokenType};
+use crate::compiler::{
+    tokenizer::{CodeLoc, Token, TokenType},
+    typecheck::Type,
+};
+use strum_macros::Display;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Display, Clone, Copy)]
 pub enum BinaryOp {
     Add,
     Mul,
@@ -17,12 +21,12 @@ pub enum BinaryOp {
     Geq,
     Assign,
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Display, Clone, Copy)]
 pub enum UnaryOp {
     Not,
     Minus,
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ExprKind {
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Literal(i64),
@@ -41,10 +45,11 @@ pub enum ExprKind {
     Local(String, Box<Expr>),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Expr {
-    kind: ExprKind,
-    loc: CodeLoc,
+    pub kind: ExprKind,
+    pub loc: CodeLoc,
+    pub type_: Option<Type>,
 }
 
 impl Expr {
@@ -52,10 +57,15 @@ impl Expr {
         Expr {
             kind,
             loc: CodeLoc::default(),
+            type_: None,
         }
     }
     fn with_codeloc(kind: ExprKind, loc: CodeLoc) -> Self {
-        Expr { kind, loc }
+        Expr {
+            kind,
+            loc,
+            type_: None,
+        }
     }
 
     fn ident_or_literal_from_token(token: Token) -> Self {
@@ -170,7 +180,7 @@ impl Parser {
 
         if expected_text.is_some_and(|expected| !expected.contains(&token.text.as_str())) {
             Err(format!(
-                "Unexpected token found: {}. Expected one of {:?}",
+                "Unexpected token found: {}. Expected one of {:?}.",
                 token.text,
                 expected_text.unwrap()
             )
@@ -332,15 +342,50 @@ impl Parser {
         self.parse_expression_(lhs, 0)
     }
 
+    fn parse_type(&mut self) -> Result<Type, String> {
+        let token = self.consume(None)?;
+        match token.text.as_str() {
+            "Int" => Ok(Type::Int),
+            "Bool" => Ok(Type::Bool),
+            "Unit" => Ok(Type::Unit),
+            // e.g. (Int, Int) => Bool
+            "(" => {
+                let mut inputs = vec![];
+                while self.peek().is_some_and(|v| v.text != ")") {
+                    inputs.push(self.parse_type()?);
+                    if self.peek().is_some_and(|v| v.text == ",") {
+                        self.consume(None)?;
+                    } else {
+                        break;
+                    }
+                }
+                self.consume(Some(&[")"]))?;
+                self.consume(Some(&["=>"]))?;
+                let output = self.parse_type()?;
+                Ok(Type::Func(inputs, Box::new(output)))
+            }
+            s => Err(format!("Expected a type signature. Instead found {s}.")),
+        }
+    }
+
     fn parse_local(&mut self) -> ParseResult {
         let token = self.consume(Some(&["var"]))?;
         let ExprKind::Identifier(lhs_text) = self.parse_identifier()?.kind else {
             unreachable!()
         };
 
+        let type_ = if self.peek().is_some_and(|v| v.text == ":") {
+            self.consume(None)?;
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
         self.consume(Some(&["="]))?;
         let rhs = self.parse_expression()?;
-        Ok(Expr::local_from_token(&token, lhs_text, rhs))
+        let mut expr = Expr::local_from_token(&token, lhs_text, rhs);
+        expr.type_ = type_;
+        Ok(expr)
     }
 
     // https://en.wikipedia.org/wiki/Operator-precedence_parser
@@ -394,15 +439,18 @@ impl Parser {
 }
 
 pub fn parse(tokens: Vec<Token>) -> ParseResult {
-    if tokens.is_empty() {
-        return Err("Input should not be empty".to_string());
-    }
     let mut parser = Parser { tokens, pos: 0 };
 
     let res = parser.parse_expression()?;
 
+    if let ExprKind::Block(exprs, _) = &res.kind
+        && exprs.is_empty()
+    {
+        return Err("Input should not be empty".to_string());
+    }
+
     if parser.has_remaining_tokens() {
-        dbg!(&res);
+        dbg!(&res, parser.peek());
         Err("There should not be any remaining tokens".to_string())
     } else {
         Ok(res)
@@ -414,6 +462,7 @@ mod tests {
     use crate::compiler::tokenizer::tokenize;
 
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[allow(clippy::unnecessary_box_returns)]
     fn ident(text: &str) -> Expr {
@@ -445,7 +494,7 @@ mod tests {
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    fn assert_parsing_is_successful_and_equal_to(source_code: &str, goal: Expr) {
+    fn assert_parsing_is_successful_and_equal_to(source_code: &str, mut goal: Expr) {
         let tokens = tokenize(source_code);
         let result = parse(tokens);
         assert!(
@@ -453,6 +502,13 @@ mod tests {
             "{result:?} should not have been an error when parsing:\n{source_code}"
         );
         let tree = result.unwrap();
+
+        // ensure the goal is wrapped in a block, as the tokenizer adds curly
+        // braces
+        if !matches!(goal.kind, ExprKind::Block(_, _)) {
+            goal = Expr::block_from_token(&Token::default(), vec![goal], true);
+        }
+
         assert_eq!(tree, goal);
     }
 
@@ -739,19 +795,25 @@ mod tests {
         f(x)
     }
     ",
+            // extra block to account for the one added by the tokenizer, as the test
+            // function doesn't add a block if the top-level expression is a block
             Expr::block_from_token(
                 &Token::default(),
-                vec![
-                    func("f", vec![ident("a")]),
-                    func("test", vec![ident("b")]),
-                    Expr::binary_op_from_token(
-                        &Token::default(),
-                        BinaryOp::Add,
-                        literal(2),
-                        literal(2),
-                    ),
-                    func("f", vec![ident("x")]),
-                ],
+                vec![Expr::block_from_token(
+                    &Token::default(),
+                    vec![
+                        func("f", vec![ident("a")]),
+                        func("test", vec![ident("b")]),
+                        Expr::binary_op_from_token(
+                            &Token::default(),
+                            BinaryOp::Add,
+                            literal(2),
+                            literal(2),
+                        ),
+                        func("f", vec![ident("x")]),
+                    ],
+                    true,
+                )],
                 true,
             ),
         );
@@ -761,7 +823,11 @@ mod tests {
     fn empty_block_works() {
         assert_parsing_is_successful_and_equal_to(
             "{}",
-            Expr::block_from_token(&Token::default(), vec![], false),
+            Expr::block_from_token(
+                &Token::default(),
+                vec![Expr::block_from_token(&Token::default(), vec![], false)],
+                true,
+            ),
         );
     }
 
@@ -908,7 +974,7 @@ mod tests {
         assert_parsing_is_successful("1 + if true then 2 else 3");
     }
 
-    // TODO: unary operators, typed variable (not sure these are needed?)
+    // TODO: typed variable (not sure these are needed?)
 
     #[test]
     fn empty_input_is_an_error() {
@@ -921,5 +987,32 @@ mod tests {
     #[test]
     fn garbage_at_the_front_is_an_error() {
         assert_parsing_fails("c a + b");
+    }
+
+    #[test]
+    fn multiple_top_level_expressions_works() {
+        assert_parsing_is_successful("2+2;1+1");
+    }
+
+    #[test]
+    fn typed_variable_works() {
+        let mut goal = Expr::local_from_token(
+            &Token::default(),
+            "x".to_string(),
+            Expr::binary_op_from_token(&Token::default(), BinaryOp::Add, literal(1), literal(1)),
+        );
+        goal.type_.replace(Type::Int);
+        assert_parsing_is_successful_and_equal_to("var x: Int = 1+1", goal);
+
+        let mut var =
+            Expr::local_from_token(&Token::default(), "f".to_string(), ident("print_int"));
+        var.type_
+            .replace(Type::Func(vec![Type::Int], Box::new(Type::Unit)));
+        let goal = Expr::block_from_token(
+            &Token::default(),
+            vec![var, func("f", vec![literal(123)])],
+            true,
+        );
+        assert_parsing_is_successful_and_equal_to("var f: (Int) => Unit = print_int; f(123)", goal);
     }
 }
