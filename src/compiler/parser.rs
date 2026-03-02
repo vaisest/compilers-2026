@@ -2,9 +2,9 @@ use crate::compiler::{
     tokenizer::{CodeLoc, Token, TokenType},
     typecheck::Type,
 };
-use strum_macros::Display;
+use strum_macros::{Display, VariantNames};
 
-#[derive(Debug, PartialEq, Eq, Display, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Display, Clone, Copy, VariantNames)]
 pub enum BinaryOp {
     Add,
     Mul,

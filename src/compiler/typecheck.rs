@@ -85,15 +85,19 @@ impl TypeChecker {
             .ok_or_else(|| format!("Could not find type of local {name}. Is it not defined yet?"))
     }
 
-    pub fn typecheck(&mut self, node: &Expr, depth: usize) -> Result<Type, String> {
+    fn get_reserved_names(&self) -> Vec<String> {
+        self.locals[0].keys().cloned().collect_vec()
+    }
+
+    pub fn typecheck(&mut self, node: &mut Expr, depth: usize) -> Result<Type, String> {
         if depth >= self.locals.len() {
             self.locals.push(HashMap::new());
         }
-        let res = match &node.kind {
+        let res = match &mut node.kind {
             ExprKind::Literal(_) => Type::Int,
             ExprKind::LiteralBool(_) => Type::Bool,
             ExprKind::Local(name, rhs) => {
-                let rhs_type = self.typecheck(rhs.as_ref(), depth)?;
+                let rhs_type = self.typecheck(rhs.as_mut(), depth)?;
 
                 if let Some(t) = &node.type_
                     && *t != rhs_type
@@ -106,11 +110,11 @@ impl TypeChecker {
                 rhs_type
             }
             ExprKind::Binary(bin_op, lhs, rhs) => {
-                let rhs_type = self.typecheck(rhs, depth)?;
+                let rhs_type = self.typecheck(rhs.as_mut(), depth)?;
                 match bin_op {
                     // equality and assignment are handled as exceptions
                     BinaryOp::Eq | BinaryOp::Neq => {
-                        let lhs_type = self.typecheck(lhs, depth)?;
+                        let lhs_type = self.typecheck(lhs.as_mut(), depth)?;
                         if lhs_type == rhs_type {
                             Type::Bool
                         } else {
@@ -134,7 +138,7 @@ impl TypeChecker {
                     // otherwise operator type signatures are fetched from the
                     // global table
                     _ => {
-                        let lhs_type = self.typecheck(lhs.as_ref(), depth)?;
+                        let lhs_type = self.typecheck(lhs.as_mut(), depth)?;
                         let Type::Func(expected_inputs, output_type) =
                             self.locals[0].get(&bin_op.to_string()).unwrap()
                         else {
@@ -154,7 +158,7 @@ impl TypeChecker {
             }
 
             ExprKind::Unary(op, rhs) => {
-                let t1 = self.typecheck(rhs, depth)?;
+                let t1 = self.typecheck(rhs.as_mut(), depth)?;
                 let Type::Func(expected_inputs, output_type) =
                     self.locals[0].get(&op.to_string()).unwrap()
                 else {
@@ -179,7 +183,7 @@ impl TypeChecker {
                     unreachable!()
                 };
 
-                for (act, exp) in inputs.iter().zip(expected_inputs.iter()) {
+                for (act, exp) in inputs.iter_mut().zip(expected_inputs.iter()) {
                     if self.typecheck(act, depth)? != *exp {
                         return Err(format!(
                             "Incorrect input types for function {name}. Expected {inputs:?}. Instead found {expected_inputs:?}"
@@ -191,7 +195,7 @@ impl TypeChecker {
             }
             ExprKind::Block(exprs, return_last) => {
                 let mut last_type = Type::Unit;
-                for expr in exprs {
+                for expr in exprs.iter_mut() {
                     last_type = self.typecheck(expr, depth + 1)?;
                 }
                 let ret_type = if *return_last { last_type } else { Type::Unit };
@@ -199,17 +203,17 @@ impl TypeChecker {
                 ret_type
             }
             ExprKind::If(cond, then, otherwise) => {
-                let if_type = self.typecheck(cond.as_ref(), depth)?;
+                let if_type = self.typecheck(cond.as_mut(), depth)?;
                 if if_type != Type::Bool {
                     return Err(format!(
                         "Expected bool as if condition. Instead found {if_type:?}"
                     ));
                 }
 
-                let then_type = self.typecheck(then.as_ref(), depth + 1)?;
+                let then_type = self.typecheck(then.as_mut(), depth + 1)?;
                 self.locals[depth + 1].clear();
                 if let Some(otherwise) = otherwise {
-                    let otherwise_type = self.typecheck(otherwise.as_ref(), depth + 1)?;
+                    let otherwise_type = self.typecheck(otherwise.as_mut(), depth + 1)?;
                     self.locals[depth + 1].clear();
                     if otherwise_type != then_type {
                         return Err(format!(
@@ -220,26 +224,27 @@ impl TypeChecker {
                 then_type
             }
             ExprKind::While(cond, then) => {
-                let if_type = self.typecheck(cond.as_ref(), depth)?;
+                let if_type = self.typecheck(cond.as_mut(), depth)?;
                 if if_type != Type::Bool {
                     return Err(format!(
                         "Expected bool as if condition. Instead found {if_type:?}"
                     ));
                 }
 
-                let then_type = self.typecheck(then.as_ref(), depth + 1)?;
+                let then_type = self.typecheck(then.as_mut(), depth + 1)?;
                 self.locals[depth + 1].clear();
                 then_type
             }
             ExprKind::Identifier(name) => self.get_symbol(name, depth)?.clone(),
         };
+        node.type_.replace(res.clone());
         Ok(res)
     }
 }
 
-pub fn typecheck(input: &Expr) -> Result<Type, String> {
+pub fn typecheck(input: &mut Expr) -> (Result<Type, String>, Vec<String>) {
     let mut checker = TypeChecker::new();
-    checker.typecheck(input, 0)
+    (checker.typecheck(input, 0), checker.get_reserved_names())
 }
 
 #[cfg(test)]
@@ -253,12 +258,16 @@ mod tests {
         parse(tokenize(source_code)).unwrap()
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn check_and_assert_eq(source_code: &str, goal: Type) {
-        assert_eq!(typecheck(&parse_source(source_code)), Ok(goal));
+        let mut ast = parse_source(source_code);
+        let _ = typecheck(&mut ast);
+        assert_eq!(ast.type_.unwrap(), goal);
     }
 
     fn check_and_assert_err(source_code: &str) {
-        assert!(typecheck(&parse_source(source_code)).is_err());
+        let mut ast = parse_source(source_code);
+        assert!(typecheck(&mut ast).0.is_err());
     }
 
     #[test]
