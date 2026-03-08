@@ -54,7 +54,7 @@ pub struct Expr {
 }
 
 impl Expr {
-    fn new(kind: ExprKind) -> Self {
+    pub fn new(kind: ExprKind) -> Self {
         Expr {
             kind,
             loc: CodeLoc::default(),
@@ -66,6 +66,14 @@ impl Expr {
             kind,
             loc,
             type_: None,
+        }
+    }
+
+    pub fn with_type(kind: ExprKind, type_: Type) -> Self {
+        Expr {
+            kind,
+            loc: CodeLoc::default(),
+            type_: Some(type_),
         }
     }
 

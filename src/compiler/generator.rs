@@ -10,6 +10,7 @@ use strum::VariantNames;
 use crate::compiler::{
     parser::{BinaryOp, Expr, ExprKind},
     tokenizer::CodeLoc,
+    typecheck::Type,
 };
 
 #[derive(Clone)]
@@ -105,11 +106,25 @@ impl Display for Instruction {
     }
 }
 
+pub fn wrap_print_call(input: Expr) -> Expr {
+    let type_ = input.type_.as_ref().expect(
+        "expression has no type. this function should only be called after type checking the AST.",
+    );
+    match type_ {
+        &Type::Int => Expr::with_type(
+            ExprKind::Function("print_int".into(), vec![input]),
+            Type::Unit,
+        ),
+        _ => input,
+    }
+}
+
 struct IrGenerator {
     symbols: Vec<HashMap<String, IRVar>>,
     instructions: Vec<IR>,
     var_counter: usize,
     label_counter: usize,
+    current_depth: usize,
 }
 impl IrGenerator {
     fn new() -> Self {
@@ -118,6 +133,7 @@ impl IrGenerator {
             instructions: vec![],
             var_counter: 1,
             label_counter: 1,
+            current_depth: 0,
         };
 
         for op_name in BinaryOp::VARIANTS {
@@ -161,15 +177,36 @@ impl IrGenerator {
         self.label_counter += 1;
         out
     }
-    fn get_symbol(&self, name: &str, depth: usize) -> Result<IRVar, String> {
+    fn get_symbol(&self, name: &str) -> Result<IRVar, String> {
         // try to look up identifier with decreasing depth
-        self.symbols[0..=depth]
-            .iter()
-            .rev()
-            .find_map(|map| map.get(name).cloned())
-            .ok_or_else(|| format!("Could not find type of local {name}. Is it not defined yet?"))
+        dbg!(&self.symbols);
+        for (idx, locals) in self.symbols.iter().enumerate() {
+            if idx > self.current_depth {
+                return Err(format!(
+                    "Could not find type of local {name}. Is it not defined yet?"
+                ));
+            }
+            if let Some(res) = locals.get(name) {
+                return Ok(res.clone());
+            }
+        }
+        Err(format!(
+            "Could not find type of local {name}. Is it not defined yet?"
+        ))
     }
-    fn visit(&mut self, depth: usize, expr: &Expr) -> IRVar {
+    fn add_symbol(&mut self, name: String, var: IRVar) -> Result<(), String> {
+        self.symbols
+            .get_mut(self.current_depth)
+            .ok_or_else(|| {
+                format!(
+                    "No locals for depth {} initialised when adding symbol {name}.",
+                    self.current_depth
+                )
+            })?
+            .insert(name, var);
+        Ok(())
+    }
+    fn visit(&mut self, expr: &Expr) -> IRVar {
         let loc = expr.loc;
 
         match &expr.kind {
@@ -197,12 +234,12 @@ impl IrGenerator {
             }
             ExprKind::Identifier(name) => {
                 // TODO: handle err
-                self.get_symbol(name, depth).unwrap()
+                self.get_symbol(name).unwrap()
             }
             ExprKind::Binary(op, lhs, rhs) => {
                 let op_var = self.symbols[0].get(&op.to_string()).unwrap().clone();
-                let lhs_var = self.visit(depth, lhs.as_ref());
-                let rhs_var = self.visit(depth, rhs.as_ref());
+                let lhs_var = self.visit(lhs.as_ref());
+                let rhs_var = self.visit(rhs.as_ref());
                 let dest = self.new_var();
                 self.instructions.push(IR::instr_with_loc(
                     loc,
@@ -215,11 +252,8 @@ impl IrGenerator {
                 dest
             }
             ExprKind::Function(name, args) => {
-                let args = args
-                    .iter()
-                    .map(|expr| self.visit(depth, expr))
-                    .collect_vec();
-                let func = self.get_symbol(name, depth).unwrap();
+                let args = args.iter().map(|expr| self.visit(expr)).collect_vec();
+                let func = self.get_symbol(name).unwrap();
                 let dest = self.new_var();
                 self.instructions.push(IR::instr_with_loc(
                     loc,
@@ -237,7 +271,7 @@ impl IrGenerator {
                 let end_label = self.new_label();
 
                 // emit loading condition loading instructions
-                let cond = self.visit(depth, cond.as_ref());
+                let cond = self.visit(cond.as_ref());
 
                 // emit jump to either then or else
                 self.instructions.push(IR::instr_with_loc(
@@ -251,7 +285,7 @@ impl IrGenerator {
 
                 // emit then label and then block instrs
                 self.instructions.push(IR::Label(then_label));
-                self.visit(depth + 1, then.as_ref());
+                self.visit_block(then.as_ref());
 
                 // if there is an else block emit instruction to skip over it,
                 // and emit its label, and the block contents
@@ -263,7 +297,7 @@ impl IrGenerator {
                         },
                     ));
                     self.instructions.push(IR::Label(otherwise_label));
-                    self.visit(depth + 1, otherwise.as_ref());
+                    self.visit_block(otherwise.as_ref());
                 }
                 self.instructions.push(IR::Label(end_label));
 
@@ -275,7 +309,7 @@ impl IrGenerator {
                 let end_label = self.new_label();
 
                 self.instructions.push(IR::Label(cond_label.clone()));
-                let cond = self.visit(depth, cond.as_ref());
+                let cond = self.visit_block(cond.as_ref());
                 self.instructions.push(IR::instr_with_loc(
                     loc,
                     InstructionKind::CondJump {
@@ -288,7 +322,7 @@ impl IrGenerator {
                 // do block
                 self.instructions.push(IR::Label(then_label));
 
-                self.visit(depth, &then);
+                self.visit(&then);
                 self.instructions.push(IR::instr_with_loc(
                     loc,
                     InstructionKind::Jump { label: cond_label },
@@ -300,7 +334,8 @@ impl IrGenerator {
             }
             ExprKind::Local(name, rhs) => {
                 let dest = self.new_var();
-                let value = self.visit(depth, rhs.as_ref());
+                let value = self.visit(rhs.as_ref());
+                self.add_symbol(name.clone(), dest.clone());
                 self.instructions.push(IR::instr_with_loc(
                     loc,
                     InstructionKind::Copy {
@@ -312,8 +347,8 @@ impl IrGenerator {
             }
             ExprKind::Unary(op, rhs) => {
                 let dest = self.new_var();
-                let value = self.visit(depth, rhs.as_ref());
-                let func = self.get_symbol(&op.to_string(), depth).unwrap();
+                let value = self.visit(rhs.as_ref());
+                let func = self.get_symbol(&op.to_string()).unwrap();
                 self.instructions.push(IR::instr_with_loc(
                     loc,
                     InstructionKind::Call {
@@ -327,7 +362,7 @@ impl IrGenerator {
             ExprKind::Block(exprs, returns_last) => {
                 let dests = exprs
                     .iter()
-                    .map(|expr| self.visit(depth + 1, expr))
+                    .map(|expr| self.visit_block(expr))
                     .collect_vec();
                 if *returns_last {
                     dests.last().unwrap().clone()
@@ -337,11 +372,18 @@ impl IrGenerator {
             }
         }
     }
+    fn visit_block(&mut self, expr: &Expr) -> IRVar {
+        self.current_depth += 1;
+        self.symbols.push(HashMap::new());
+        let res = self.visit(expr);
+        self.symbols.pop();
+        res
+    }
 }
 
 pub fn generate_ir(ast: &Expr, _reserved_names: &[String]) -> Vec<IR> {
     let mut generator = IrGenerator::new();
-    generator.visit(1, ast);
+    generator.visit(ast);
     generator.instructions
 }
 
@@ -379,6 +421,21 @@ mod tests {
 LoadIntConst(2, x2)
 Call(+, [x, x2], x3)
 Call(print_int, [x3], x4)",
+        );
+    }
+
+    #[test]
+    fn func_call_works() {
+        assert_ir_eq(
+            "var a = 1;
+var f = print_int;
+f(a + 3)",
+            "LoadIntConst(1, x)
+Copy(x, x2)
+Copy(print_int, x3)
+LoadIntConst(3, x4)
+Call(+, [x2, x4], x5)
+Call(x3, [x5], x6)",
         );
     }
 }

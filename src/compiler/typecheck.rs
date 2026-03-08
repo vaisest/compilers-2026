@@ -39,8 +39,6 @@ fn parse_func_signature(sig: &str) -> (String, Type) {
     )
 }
 
-// fn get_binary_func_type
-
 pub struct TypeChecker {
     // TODO: change hashmap type. The default rust hashmap is very slow for ddos
     // reasons which are not relevant here
