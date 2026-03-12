@@ -252,7 +252,11 @@ impl Parser {
         if self.peek().is_some_and(|v| v.text == "(") {
             // consume (
             self.consume(None)?;
-            let args = self.parse_argument_list()?;
+            let args = if self.peek().is_some_and(|v| v.text != ")") {
+                self.parse_argument_list()?
+            } else {
+                vec![]
+            };
             self.consume(Some(&[")"]))?;
             return Ok(Expr::func_from_token(token, args));
         }
@@ -283,9 +287,7 @@ impl Parser {
         let while_token = self.consume(Some(&["while"]))?;
         let if_expr = self.parse_expression()?;
         self.consume(Some(&["do"]))?;
-        self.consume(Some(&["{"]))?;
-        let true_block = self.parse_expression()?;
-        self.consume(Some(&["}"]))?;
+        let true_block = self.parse_block()?;
         Ok(Expr::while_from_token(&while_token, if_expr, true_block))
     }
     fn parse_unary(&mut self) -> ParseResult {
@@ -339,12 +341,15 @@ impl Parser {
             // make { a b } illegal. only blocks are allowed to omit semicolons on non-last expressions
             if !had_semicol
                 && expressions.last().is_some_and(|v: &Expr| {
-                    !matches!(v.kind, ExprKind::Block(..) | ExprKind::If(..))
+                    !matches!(
+                        v.kind,
+                        ExprKind::Block(..) | ExprKind::If(..) | ExprKind::While(..)
+                    )
                 })
             {
                 return Err(format!(
-                    "Expected ; following expression in block. Only the blocks or the last expression are allowed to omit semicolons. Instead the last expression was:\n{:?}",
-                    expressions.last().unwrap()
+                    "Expected ; following expression in block. Only the blocks or the last expression are allowed to omit semicolons. Instead the next token is:\n{:?}",
+                    self.peek().unwrap()
                 ));
             }
 
@@ -481,7 +486,6 @@ pub fn parse(tokens: Vec<Token>) -> ParseResult {
     }
 
     if parser.has_remaining_tokens() {
-        dbg!(&res, parser.peek());
         Err("There should not be any remaining tokens".to_string())
     } else {
         Ok(res)
@@ -620,6 +624,8 @@ mod tests {
                 )),
             ),
         );
+
+        assert_parsing_is_successful("if a < b then f() else g()");
     }
 
     #[test]
@@ -643,6 +649,8 @@ mod tests {
                 ],
             ),
         );
+        assert_parsing_is_successful("f()");
+        assert_parsing_is_successful("f(a)");
     }
 
     #[test]
@@ -937,18 +945,30 @@ mod tests {
             Expr::while_from_token(
                 &Token::default(),
                 Expr::binary_op_from_token(&Token::default(), BinaryOp::Gt, ident("n"), literal(1)),
-                Expr::binary_op_from_token(
+                Expr::block_from_token(
                     &Token::default(),
-                    BinaryOp::Assign,
-                    ident("n"),
-                    Expr::binary_op_from_token(
+                    vec![Expr::binary_op_from_token(
                         &Token::default(),
-                        BinaryOp::Sub,
+                        BinaryOp::Assign,
                         ident("n"),
-                        literal(2),
-                    ),
+                        Expr::binary_op_from_token(
+                            &Token::default(),
+                            BinaryOp::Sub,
+                            ident("n"),
+                            literal(2),
+                        ),
+                    )],
+                    true,
                 ),
             ),
+        );
+
+        assert_parsing_is_successful(
+            "var a = 1;
+while a < 4 do {
+  a = a + 1;
+}
+a",
         );
     }
 

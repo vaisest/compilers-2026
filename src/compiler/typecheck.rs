@@ -293,5 +293,11 @@ mod tests {
         check_and_assert_err("{ var f: (Int) => Int = print_int; f }");
         check_and_assert_err("var x: Int = 0; x = x < 2");
         check_and_assert_eq("var x: Bool = false; x = 1 < 2; x", Type::Bool);
+        check_and_assert_eq(
+            "var a = 1;
+var f = print_int;
+f(a + 3)",
+            Type::Unit,
+        );
     }
 }
