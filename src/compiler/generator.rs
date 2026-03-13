@@ -126,6 +126,10 @@ pub fn wrap_print_call(input: Expr) -> Expr {
             ExprKind::Function("print_int".into(), vec![input]),
             Type::Unit,
         ),
+        &Type::Bool => Expr::with_type(
+            ExprKind::Function("print_bool".into(), vec![input]),
+            Type::Unit,
+        ),
         _ => input,
     }
 }
@@ -155,10 +159,12 @@ impl IrGenerator {
             };
             out.symbols[0].insert(op_name.to_string(), var);
         }
-        let var = IRVar {
-            name: "print_int".to_string(),
-        };
-        out.symbols[0].insert("print_int".to_string(), var);
+        for std_func in ["print_int", "print_bool", "read_int"] {
+            let var = IRVar {
+                name: std_func.to_string(),
+            };
+            out.symbols[0].insert(std_func.to_string(), var);
+        }
 
         out
     }
@@ -528,6 +534,21 @@ Copy(x6, x2)
 Jump(Label(while_start))
 Label(while_end)
 Call(print_int, [x2], x7)",
+        );
+    }
+
+    #[test]
+    fn implicit_print_works() {
+        assert_ir_eq(
+            "true",
+            "LoadBoolConst(true, x)
+Call(print_bool, [x], x2)",
+        );
+
+        assert_ir_eq(
+            "1",
+            "LoadIntConst(1, x)
+Call(print_int, [x], x2)",
         );
     }
 }

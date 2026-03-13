@@ -138,7 +138,7 @@ main:
                             format!(
                                 "xor %rax, %rax
                                 movq {}, %rax
-                                and {} %rax
+                                and {}, %rax
                                 movq %rax, {dest_loc}",
                                 arg_locs[0], arg_locs[1]
                             )
@@ -170,6 +170,13 @@ main:
                             format!(
                                 "movq {}, %rdi
                             callq print_int",
+                                arg_locs[0]
+                            )
+                        }
+                        "print_bool" => {
+                            format!(
+                                "movq {}, %rdi
+                            callq print_bool",
                                 arg_locs[0]
                             )
                         }

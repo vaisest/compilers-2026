@@ -66,6 +66,7 @@ impl TypeChecker {
             "Leq: int, int -> bool",
             "Geq: int, int -> bool",
             "print_int: int -> ()",
+            "print_bool: bool -> ()",
             "read_int: () -> int",
         ];
         for (name, type_) in func_types.map(parse_func_signature) {
@@ -276,7 +277,9 @@ mod tests {
         check_and_assert_eq("var x = false; x or true", Type::Bool);
 
         check_and_assert_err("1+a");
-        // check_and_assert_err("var a: Bool = 0;1<a");
+        check_and_assert_err("print_bool(1)");
+        check_and_assert_err("print_int(true)");
+        check_and_assert_err("var a: Bool = 0;1<a");
     }
 
     #[test]
