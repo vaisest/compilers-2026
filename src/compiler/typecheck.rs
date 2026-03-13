@@ -66,6 +66,7 @@ impl TypeChecker {
             "Leq: int, int -> bool",
             "Geq: int, int -> bool",
             "print_int: int -> ()",
+            "read_int: () -> int",
         ];
         for (name, type_) in func_types.map(parse_func_signature) {
             out.locals[0].insert(name, type_);

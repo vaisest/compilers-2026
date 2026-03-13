@@ -13,9 +13,9 @@ use crate::compiler::{
     typecheck::Type,
 };
 
-#[derive(Clone)]
-struct IRVar {
-    name: String,
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct IRVar {
+    pub name: String,
 }
 impl IRVar {
     fn unit() -> Self {
@@ -38,13 +38,13 @@ impl Display for IRVar {
 }
 
 pub struct Instruction {
-    location: CodeLoc,
-    instruction: InstructionKind,
+    pub location: CodeLoc,
+    pub instruction: InstructionKind,
 }
 
 #[derive(Clone)]
 pub struct Label {
-    name: String,
+    pub name: String,
 }
 
 #[derive(PartialEq, Eq, Hash, strum_macros::Display, Copy, Clone)]
@@ -65,7 +65,7 @@ impl Display for Label {
 }
 
 #[derive(strum_macros::Display)]
-enum InstructionKind {
+pub enum InstructionKind {
     #[strum(to_string = "LoadBoolConst({value}, {dest})")]
     LoadBoolConst { value: bool, dest: IRVar },
     #[strum(to_string = "LoadIntConst({value}, {dest})")]
@@ -136,6 +136,7 @@ struct IrGenerator {
     var_counter: usize,
     label_counters: HashMap<LabelKind, usize>,
     current_depth: usize,
+    all_vars: Vec<IRVar>,
 }
 impl IrGenerator {
     fn new() -> Self {
@@ -145,6 +146,7 @@ impl IrGenerator {
             var_counter: 1,
             label_counters: HashMap::new(),
             current_depth: 0,
+            all_vars: vec![],
         };
 
         for op_name in BinaryOp::VARIANTS {
@@ -172,6 +174,7 @@ impl IrGenerator {
             ),
         };
         self.var_counter += 1;
+        self.all_vars.push(out.clone());
         out
     }
     fn new_label(&mut self, kind: LabelKind) -> Label {
@@ -417,11 +420,11 @@ impl IrGenerator {
     }
 }
 
-pub fn generate_ir(ast: &Expr, _reserved_names: &[String]) -> Vec<IR> {
+pub fn generate_ir(ast: &Expr, _reserved_names: &[String]) -> (Vec<IR>, Vec<IRVar>) {
     let ast = wrap_print_call(ast.clone());
     let mut generator = IrGenerator::new();
     generator.visit(&ast);
-    generator.instructions
+    (generator.instructions, generator.all_vars)
 }
 
 #[cfg(test)]
@@ -445,7 +448,7 @@ mod tests {
 
     fn assert_ir_eq(source_code: &str, goal: &str) {
         let (ast, reserved_names) = prepare(source_code);
-        let ir = generate_ir(&ast, &reserved_names);
+        let (ir, _) = generate_ir(&ast, &reserved_names);
         let text = ir.iter().join("\n");
 
         assert_eq!(&text, goal);
