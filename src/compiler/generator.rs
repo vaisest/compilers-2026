@@ -310,7 +310,11 @@ impl IrGenerator {
                     InstructionKind::CondJump {
                         cond,
                         then_label: then_label.clone(),
-                        else_label: otherwise_label.clone(),
+                        else_label: if otherwise.is_some() {
+                            otherwise_label.clone()
+                        } else {
+                            end_label.clone()
+                        },
                     },
                 ));
 
