@@ -61,6 +61,8 @@ impl TypeChecker {
             "Rem: int, int -> int",
             "Or: bool, bool -> bool",
             "And: bool, bool -> bool",
+            "Not: bool -> bool",
+            "Minus: int -> int",
             "Lt: int, int -> bool",
             "Gt: int, int -> bool",
             "Leq: int, int -> bool",
@@ -159,8 +161,9 @@ impl TypeChecker {
 
             ExprKind::Unary(op, rhs) => {
                 let t1 = self.typecheck(rhs.as_mut(), depth)?;
-                let Type::Func(expected_inputs, output_type) =
-                    self.locals[0].get(&op.to_string()).unwrap()
+                let Type::Func(expected_inputs, output_type) = self.locals[0]
+                    .get(&op.to_string())
+                    .unwrap_or_else(|| panic!("failed to get type for unary op {op}"))
                 else {
                     unreachable!()
                 };
@@ -199,7 +202,10 @@ impl TypeChecker {
                     last_type = self.typecheck(expr, depth + 1)?;
                 }
                 let ret_type = if *return_last { last_type } else { Type::Unit };
-                self.locals[depth + 1].clear();
+                // edge case: empty block
+                if let Some(map) = self.locals.get_mut(depth + 1) {
+                    map.clear();
+                };
                 ret_type
             }
             ExprKind::If(cond, then, otherwise) => {
@@ -296,6 +302,8 @@ mod tests {
     fn local_type_checking_works() {
         check_and_assert_err("{ var f: (Int) => Int = print_int; f }");
         check_and_assert_err("var x: Int = 0; x = x < 2");
+        check_and_assert_err("while 0 do { print_int(1); }");
+        check_and_assert_err("if {} then 2 else 3");
         check_and_assert_eq("var x: Bool = false; x = 1 < 2; x", Type::Bool);
         check_and_assert_eq(
             "var a = 1;

@@ -86,7 +86,6 @@ fn main() {
             let source_code = read_to_string(input_file).unwrap();
             dbg!(&source_code);
             let program = compile(&source_code, None).expect("compilation failure");
-            dbg!(&program);
             println!("Writing program to {output}");
             fs::write(output, program).expect("failed to write program output");
         }

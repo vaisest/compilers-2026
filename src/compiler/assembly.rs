@@ -1,8 +1,6 @@
-use itertools::Itertools;
-
 use crate::compiler::generator::{IR, IRVar, Instruction, InstructionKind};
+use std::collections::HashMap;
 use std::fmt::Write;
-use std::{collections::HashMap, fmt::write};
 
 struct Locals {
     var_location_map: HashMap<IRVar, String>,
@@ -22,12 +20,14 @@ impl Locals {
         }
     }
 
-    fn get_ref(&self, v: &IRVar) -> Option<&String> {
-        self.var_location_map.get(v)
+    fn get_ref(&self, v: &IRVar) -> Result<&String, String> {
+        self.var_location_map
+            .get(v)
+            .ok_or(format!("failed to get stack ref for {v:?}"))
     }
 }
 
-pub fn generate_assembly(ir: Vec<IR>, vars: Vec<IRVar>) -> String {
+pub fn generate_assembly(ir: Vec<IR>, vars: Vec<IRVar>) -> Result<String, String> {
     let locals = Locals::new_from_vars(vars);
 
     let mut output = String::new();
@@ -61,11 +61,11 @@ main:
                 instruction,
             }) => match instruction {
                 InstructionKind::LoadBoolConst { value, dest } => {
-                    let dest_loc = locals.get_ref(&dest).unwrap();
+                    let dest_loc = locals.get_ref(&dest)?;
                     writeln!(output, "movq ${}, {dest_loc}", u8::from(value)).unwrap();
                 }
                 InstructionKind::LoadIntConst { value, dest } => {
-                    let dest_loc = locals.get_ref(&dest).unwrap();
+                    let dest_loc = locals.get_ref(&dest)?;
                     if value >= -2i64.pow(31) && value < 2i64.pow(31) {
                         writeln!(output, "movq ${value}, {dest_loc}").unwrap();
                     } else {
@@ -74,8 +74,8 @@ main:
                     }
                 }
                 InstructionKind::Copy { source, dest } => {
-                    let src_loc = locals.get_ref(&source).unwrap();
-                    let dst_loc = locals.get_ref(&dest).unwrap();
+                    let src_loc = locals.get_ref(&source)?;
+                    let dst_loc = locals.get_ref(&dest)?;
                     writeln!(output, "movq {src_loc}, %rax").unwrap();
                     writeln!(output, "movq %rax, {dst_loc}").unwrap();
                 }
@@ -84,8 +84,8 @@ main:
                     then_label,
                     else_label,
                 } => {
-                    let cond_loc = locals.get_ref(&cond).unwrap();
-                    writeln!(output, "cmpq $0, {cond_loc}").unwrap();
+                    let cond_loc = locals.get_ref(&cond)?;
+                    writeln!(output, "cmp $0, {cond_loc}").unwrap();
                     writeln!(output, "jne .L{}", then_label.name).unwrap();
                     writeln!(output, "jmp .L{}", else_label.name).unwrap();
                 }
@@ -93,24 +93,22 @@ main:
                     writeln!(output, "jmp .L{}", label.name).unwrap();
                 }
                 InstructionKind::Call { func, args, dest } => {
-                    let dest_loc = locals.get_ref(&dest).unwrap();
-                    let arg_locs = args
-                        .iter()
-                        .map(|v| locals.get_ref(v).unwrap())
-                        .collect_vec();
+                    let dest_loc = locals.get_ref(&dest)?;
+                    let mut arg_locs = vec![];
+                    for arg in &args {
+                        arg_locs.push(locals.get_ref(arg)?);
+                    }
                     let assembly = match func.name.as_str() {
-                        "Add" => {
+                        op @ ("Add" | "Sub" | "Mul") => {
+                            let op = match op {
+                                "Add" => "add",
+                                "Sub" => "sub",
+                                "Mul" => "imul",
+                                _ => unreachable!(),
+                            };
                             format!(
                                 "movq {}, %rax
-                                add {}, %rax
-                                movq %rax, {dest_loc}",
-                                arg_locs[0], arg_locs[1]
-                            )
-                        }
-                        "Mul" => {
-                            format!(
-                                "movq {}, %rax
-                                imul {}, %rax
+                                {op} {}, %rax
                                 movq %rax, {dest_loc}",
                                 arg_locs[0], arg_locs[1]
                             )
@@ -123,6 +121,22 @@ main:
                                 idiv {}
                                 movq {res_reg}, {dest_loc}",
                                 arg_locs[0], arg_locs[1]
+                            )
+                        }
+                        "Minus" => {
+                            format!(
+                                "movq {}, %rax
+                            imul $-1, %rax
+                            movq %rax, {}",
+                                arg_locs[0], dest_loc
+                            )
+                        }
+                        "Not" => {
+                            format!(
+                                "movq {}, %rax
+                            not %rax
+                            movq %rax, {}",
+                                arg_locs[0], dest_loc
                             )
                         }
                         "Or" => {
@@ -143,19 +157,21 @@ main:
                                 arg_locs[0], arg_locs[1]
                             )
                         }
-                        op @ ("Lt" | "Gt" | "Leq" | "Geq") => {
+                        op @ ("Lt" | "Gt" | "Leq" | "Geq" | "Eq" | "Neq") => {
                             let op = match op {
                                 "Lt" => "l",
                                 "Gt" => "g",
                                 "Leq" => "le",
                                 "Geq" => "ge",
+                                "Eq" => "e",
+                                "Neq" => "ne",
                                 _ => unreachable!(),
                             };
                             format!(
                                 "xor %rax, %rax
                                 movq {}, %rdx
-                                cmpq {}, %rdx
-                                set{op}
+                                cmp {}, %rdx
+                                set{op} %al
                                 movq %rax, {}",
                                 arg_locs[0], arg_locs[1], dest_loc
                             )
@@ -180,7 +196,7 @@ main:
                                 arg_locs[0]
                             )
                         }
-                        _ => unimplemented!(),
+                        op => unimplemented!("Operation {op} is not implemented yet"),
                     };
                     writeln!(output, "{assembly}").unwrap();
                 }
@@ -196,5 +212,5 @@ popq %rbp
 ret"
     )
     .unwrap();
-    output
+    Ok(output)
 }

@@ -8,7 +8,7 @@ use std::string::ToString;
 use strum::VariantNames;
 
 use crate::compiler::{
-    parser::{BinaryOp, Expr, ExprKind},
+    parser::{BinaryOp, Expr, ExprKind, UnaryOp},
     tokenizer::CodeLoc,
     typecheck::Type,
 };
@@ -153,7 +153,7 @@ impl IrGenerator {
             all_vars: vec![],
         };
 
-        for op_name in BinaryOp::VARIANTS {
+        for op_name in BinaryOp::VARIANTS.iter().chain(UnaryOp::VARIANTS) {
             let var = IRVar {
                 name: op_name.to_string(),
             };

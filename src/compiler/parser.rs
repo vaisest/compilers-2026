@@ -21,7 +21,7 @@ pub enum BinaryOp {
     Geq,
     Assign,
 }
-#[derive(Debug, PartialEq, Eq, Display, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Display, Clone, Copy, VariantNames)]
 pub enum UnaryOp {
     Not,
     Minus,
@@ -90,9 +90,10 @@ impl Expr {
                 }
             }
             // it is assumed that these tokens are actually numbers
-            TokenType::Integer => {
-                Self::with_codeloc(ExprKind::Literal(token.text.parse().unwrap()), token.loc)
-            }
+            TokenType::Integer => Self::with_codeloc(
+                ExprKind::Literal(token.text.parse().expect("number is not an i64")),
+                token.loc,
+            ),
             _ => todo!(
                 "only identifier and integer expressions can be inferred directly from tokens"
             ),
@@ -210,7 +211,14 @@ impl Parser {
     fn parse_int_literal(&mut self) -> ParseResult {
         let token = self.consume(None)?;
         if token.type_ == TokenType::Integer {
-            Ok(Expr::new(ExprKind::Literal(token.text.parse().unwrap())))
+            Ok(Expr::new(ExprKind::Literal(
+                token.text.parse().unwrap_or_else(|_| {
+                    panic!(
+                        "{} failed to parse as integer when parsing an int literal",
+                        token.text
+                    )
+                }),
+            )))
         } else {
             Err("Unexpected token: expected a literal integer".to_string())
         }
@@ -233,7 +241,7 @@ impl Parser {
     fn parse_argument_list(&mut self) -> Result<Vec<Expr>, String> {
         let mut args = vec![];
         loop {
-            args.push(self.parse_expression()?);
+            args.push(self.parse_expression(false)?);
             if self.peek().is_some_and(|v| v.text == ",") {
                 self.consume(None)?;
             } else {
@@ -266,12 +274,12 @@ impl Parser {
 
     fn parse_if(&mut self) -> ParseResult {
         let if_token = self.consume(Some(&["if"]))?;
-        let if_expr = self.parse_expression()?;
+        let if_expr = self.parse_expression(false)?;
         self.consume(Some(&["then"]))?;
-        let true_expr = self.parse_expression()?;
+        let true_expr = self.parse_expression(false)?;
         if self.peek().is_some_and(|v| v.text == "else") {
             self.consume(Some(&["else"]))?;
-            let otherwise_expr = self.parse_expression()?;
+            let otherwise_expr = self.parse_expression(false)?;
             Ok(Expr::if_from_token(
                 &if_token,
                 if_expr,
@@ -285,27 +293,46 @@ impl Parser {
 
     fn parse_while(&mut self) -> ParseResult {
         let while_token = self.consume(Some(&["while"]))?;
-        let if_expr = self.parse_expression()?;
+        let if_expr = self.parse_expression(false)?;
         self.consume(Some(&["do"]))?;
         let true_block = self.parse_block()?;
         Ok(Expr::while_from_token(&while_token, if_expr, true_block))
     }
     fn parse_unary(&mut self) -> ParseResult {
         let op_token = self.consume(Some(&["-", "not"]))?;
-        Ok(Expr::unary_op_from_token(
-            &op_token,
-            op_type_for_unary_operator(&op_token),
-            self.parse_factor()?,
-        ))
+        // edge case: -9223372036854775808 where 9223372036854775808 does not
+        // fit in an i64. parse together so it does
+        if op_token.text == "-" && self.peek().is_some_and(|v| v.type_ == TokenType::Integer) {
+            let next = self.consume(None)?;
+            Ok(Expr::ident_or_literal_from_token(Token {
+                type_: TokenType::Integer,
+                loc: op_token.loc,
+                text: format!("-{}", next.text),
+            }))
+        } else {
+            Ok(Expr::unary_op_from_token(
+                &op_token,
+                op_type_for_unary_operator(&op_token),
+                self.parse_factor(false)?,
+            ))
+        }
     }
 
-    fn parse_factor(&mut self) -> ParseResult {
+    fn parse_factor(&mut self, var_allowed: bool) -> ParseResult {
         let peeked = self.peek().unwrap();
         // key words are handled here
         match (peeked.type_, peeked.text.as_str()) {
             (TokenType::Identifier, "if") => self.parse_if(),
             (TokenType::Identifier, "while") => self.parse_while(),
-            (TokenType::Identifier, "var") => self.parse_local(),
+            (TokenType::Identifier, "var") => {
+                if var_allowed {
+                    self.parse_local()
+                } else {
+                    Err(
+                        "var is only allowed directly inside blocks {} and in top-level expressions".into(),
+                    )
+                }
+            }
             (TokenType::Identifier, "true" | "false") => self.parse_bool_literal(),
             (TokenType::Operator, _) | (TokenType::Identifier, "not") => self.parse_unary(),
             (TokenType::Identifier, text) => {
@@ -327,7 +354,7 @@ impl Parser {
 
     fn parse_parenthesized(&mut self) -> ParseResult {
         self.consume(Some(&["("]))?;
-        let expr = self.parse_expression()?;
+        let expr = self.parse_expression(false)?;
         self.consume(Some(&[")"]))?;
         Ok(expr)
     }
@@ -353,7 +380,7 @@ impl Parser {
                 ));
             }
 
-            let expr = self.parse_expression()?;
+            let expr = self.parse_expression(true)?;
             // the last ; is optional as it controls whether the last expression
             // is returned. This means we expect either a } or ; after each expression
             had_semicol = self.peek().is_some_and(|v| v.text == ";");
@@ -373,8 +400,8 @@ impl Parser {
     // this can essentially parse everything. generally that means a single
     // expression, but in the case of a block, parse_factor will call this again
     // to parse all of the block's expressions
-    fn parse_expression(&mut self) -> ParseResult {
-        let lhs = self.parse_factor()?;
+    fn parse_expression(&mut self, var_allowed: bool) -> ParseResult {
+        let lhs = self.parse_factor(var_allowed)?;
         self.parse_expression_(lhs, 0)
     }
 
@@ -418,7 +445,7 @@ impl Parser {
         };
 
         self.consume(Some(&["="]))?;
-        let rhs = self.parse_expression()?;
+        let rhs = self.parse_expression(false)?;
         let mut expr = Expr::local_from_token(&token, lhs_text, rhs);
         expr.type_ = type_;
         Ok(expr)
@@ -444,11 +471,11 @@ impl Parser {
                         "Assignment can only assign to identifiers. Instead found: {lhs:?}"
                     ));
                 }
-                let rhs = self.parse_expression()?;
+                let rhs = self.parse_expression(false)?;
                 return Ok(Expr::binary_op_from_token(&op, op_type, lhs, rhs));
             }
 
-            let mut rhs = self.parse_factor()?;
+            let mut rhs = self.parse_factor(false)?;
             // while lookahead is a binary operator whose precedence is greater
             // than op's, or a right-associative operator whose precedence is
             // equal to op's
@@ -477,7 +504,7 @@ impl Parser {
 pub fn parse(tokens: Vec<Token>) -> ParseResult {
     let mut parser = Parser { tokens, pos: 0 };
 
-    let res = parser.parse_expression()?;
+    let res = parser.parse_expression(true)?;
 
     if let ExprKind::Block(exprs, _) = &res.kind
         && exprs.is_empty()
@@ -1094,5 +1121,20 @@ a",
                 true,
             ),
         );
+    }
+
+    #[test]
+    fn test_gadget_cases_are_correct() {
+        assert_parsing_fails("(1 + 2");
+        assert_parsing_fails("1++2");
+        assert_parsing_fails("1 + + 2");
+        assert_parsing_fails("1 2");
+        assert_parsing_fails("(1 + 2))");
+        assert_parsing_fails("1 +");
+        assert_parsing_fails("1 + (2 +)");
+        assert_parsing_fails("123abc");
+        assert_parsing_fails("if true then var x;");
+        assert_parsing_fails("if true then var x = 3;");
+        assert_parsing_fails("if var x = 3 then 4");
     }
 }
