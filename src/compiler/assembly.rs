@@ -11,9 +11,15 @@ impl Locals {
         let mut map = HashMap::new();
         let mut stack_used = 0;
         for (idx, var) in vars.into_iter().enumerate() {
-            map.insert(var, format!("-{}(%rbp)", 8 + 8 * idx));
+            // function irvars will point to labels, not data on the stack
+            if let Some(dest_func) = &var.aliases_func {
+                map.insert(var.clone(), dest_func.clone());
+            } else {
+                map.insert(var, format!("-{}(%rbp)", 8 + 8 * idx));
+            }
             stack_used += 8;
         }
+        dbg!(&map);
         Self {
             var_location_map: map,
             stack_used,
@@ -178,27 +184,28 @@ main:
                                 arg_locs[0], arg_locs[1], dest_loc
                             )
                         }
-                        "read_int" => {
-                            format!(
-                                "callq read_int
-                            movq %rax, {dest_loc}"
-                            )
+                        op => {
+                            let registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+                            let mut assembly = String::new();
+                            if let Ok(op_var) = locals.get_ref(&func) {
+                                // read inputs into registers
+                                for (var, reg) in arg_locs.iter().zip(registers) {
+                                    writeln!(assembly, "movq {var}, %{reg}").unwrap();
+                                }
+                                dbg!(&op_var);
+                                // call and save result
+                                writeln!(
+                                    assembly,
+                                    "callq {op_var}
+                                                    movq %rax, {dest_loc}
+                                ",
+                                )
+                                .unwrap();
+                                assembly
+                            } else {
+                                return Err(format!("Function {op} is not defined."));
+                            }
                         }
-                        "print_int" => {
-                            format!(
-                                "movq {}, %rdi
-                            callq print_int",
-                                arg_locs[0]
-                            )
-                        }
-                        "print_bool" => {
-                            format!(
-                                "movq {}, %rdi
-                            callq print_bool",
-                                arg_locs[0]
-                            )
-                        }
-                        op => unimplemented!("Operation {op} is not implemented yet"),
                     };
                     writeln!(output, "{assembly}").unwrap();
                 }
@@ -236,5 +243,10 @@ mod tests {
     #[test]
     fn conditonals_40_compiles() {
         assert_compiles("if true then { print_int(2); } else { print_int(3); }");
+    }
+
+    #[test]
+    fn assignment_of_fun_compiles() {
+        assert_compiles("var x = print_int; x(1)");
     }
 }

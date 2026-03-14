@@ -16,11 +16,13 @@ use crate::compiler::{
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct IRVar {
     pub name: String,
+    pub aliases_func: Option<String>,
 }
 impl IRVar {
     fn unit() -> Self {
         Self {
             name: "unit".into(),
+            aliases_func: None,
         }
     }
 }
@@ -153,22 +155,24 @@ impl IrGenerator {
             // this isn't really a value you'd ever need, but this keeps
             // assembly generation much simpler as we can just treat unit as a
             // throwaway variable
-            all_vars: vec![IRVar {
-                name: "unit".to_string(),
-            }],
+            all_vars: vec![IRVar::unit()],
         };
 
         for op_name in BinaryOp::VARIANTS.iter().chain(UnaryOp::VARIANTS) {
             let var = IRVar {
                 name: op_name.to_string(),
+                aliases_func: Some(op_name.to_string()),
             };
-            out.symbols[0].insert(op_name.to_string(), var);
+            out.symbols[0].insert(op_name.to_string(), var.clone());
+            out.all_vars.push(var);
         }
         for std_func in ["print_int", "print_bool", "read_int"] {
             let var = IRVar {
                 name: std_func.to_string(),
+                aliases_func: Some(std_func.to_string()),
             };
-            out.symbols[0].insert(std_func.to_string(), var);
+            out.symbols[0].insert(std_func.to_string(), var.clone());
+            out.all_vars.push(var);
         }
 
         out
@@ -183,6 +187,7 @@ impl IrGenerator {
                     String::new()
                 }
             ),
+            aliases_func: None,
         };
         self.var_counter += 1;
         self.all_vars.push(out.clone());
@@ -398,17 +403,35 @@ impl IrGenerator {
                 IRVar::unit()
             }
             ExprKind::Local(name, rhs) => {
-                let value = self.visit(rhs.as_ref());
-                let dest = self.new_var();
-                self.add_symbol(name.clone(), dest.clone());
-                self.instructions.push(IR::instr_with_loc(
-                    loc,
-                    InstructionKind::Copy {
-                        source: value,
-                        dest: dest.clone(),
-                    },
-                ));
-                dest
+                // handle function aliasing
+                if expr
+                    .type_
+                    .as_ref()
+                    .is_some_and(|v| matches!(v, Type::Func(..)))
+                {
+                    let ExprKind::Identifier(rhs_name) = &rhs.kind else {
+                        unreachable!()
+                    };
+                    let var = IRVar {
+                        name: name.clone(),
+                        aliases_func: Some(rhs_name.clone()),
+                    };
+                    self.all_vars.push(var.clone());
+                    self.add_symbol(name.clone(), var.clone());
+                    var
+                } else {
+                    let value = self.visit(rhs.as_ref());
+                    let dest = self.new_var();
+                    self.add_symbol(name.clone(), dest.clone());
+                    self.instructions.push(IR::instr_with_loc(
+                        loc,
+                        InstructionKind::Copy {
+                            source: value,
+                            dest: dest.clone(),
+                        },
+                    ));
+                    dest
+                }
             }
             ExprKind::Unary(op, rhs) => {
                 let dest = self.new_var();
@@ -497,10 +520,9 @@ var f = print_int;
 f(a + 3)",
             "LoadIntConst(1, x)
 Copy(x, x2)
-Copy(print_int, x3)
-LoadIntConst(3, x4)
-Call(Add, [x2, x4], x5)
-Call(x3, [x5], x6)",
+LoadIntConst(3, x3)
+Call(Add, [x2, x3], x4)
+Call(f, [x4], x5)",
         );
     }
 
@@ -516,17 +538,15 @@ if a < b then f(a) else g(b)",
 Copy(x, x2)
 LoadIntConst(1, x3)
 Copy(x3, x4)
-Copy(print_int, x5)
-Copy(print_int, x6)
-Call(Lt, [x2, x4], x7)
-CondJump(x7, Label(then), Label(else))
+Call(Lt, [x2, x4], x5)
+CondJump(x5, Label(then), Label(else))
 Label(then)
-Call(x5, [x2], x9)
-Copy(x9, x8)
+Call(f, [x2], x7)
+Copy(x7, x6)
 Jump(Label(if_end))
 Label(else)
-Call(x6, [x4], x10)
-Copy(x10, x8)
+Call(g, [x4], x8)
+Copy(x8, x6)
 Label(if_end)",
         );
     }
