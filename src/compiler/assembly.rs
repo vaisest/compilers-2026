@@ -216,3 +216,26 @@ ret"
     .unwrap();
     Ok(output)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::generate_assembly;
+    use crate::compiler::{generator, parser, tokenizer, typecheck};
+
+    fn assert_compiles(source_code: &str) {
+        let tokens = tokenizer::tokenize(source_code);
+
+        let mut ast = parser::parse(tokens).unwrap();
+        let (typecheck_res, reserved_names) = typecheck::typecheck(&mut ast);
+        typecheck_res.unwrap();
+        let (ir, ir_vars) = generator::generate_ir(&ast, &reserved_names);
+        dbg!(&ir_vars);
+        let ass = generate_assembly(ir, ir_vars).unwrap();
+
+        assert!(!ass.is_empty());
+    }
+    #[test]
+    fn conditonals_40_compiles() {
+        assert_compiles("if true then { print_int(2); } else { print_int(3); }");
+    }
+}

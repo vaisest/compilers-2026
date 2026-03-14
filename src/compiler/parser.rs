@@ -1136,5 +1136,10 @@ a",
         assert_parsing_fails("if true then var x;");
         assert_parsing_fails("if true then var x = 3;");
         assert_parsing_fails("if var x = 3 then 4");
+        assert_parsing_is_successful(
+            "var a = false;
+true or { a = true; a }
+print_bool(a);",
+        );
     }
 }

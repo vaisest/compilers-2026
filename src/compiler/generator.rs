@@ -121,12 +121,12 @@ pub fn wrap_print_call(input: Expr) -> Expr {
     let type_ = input.type_.as_ref().expect(
         "expression has no type. this function should only be called after type checking the AST.",
     );
-    match type_ {
-        &Type::Int => Expr::with_type(
+    match *type_ {
+        Type::Int => Expr::with_type(
             ExprKind::Function("print_int".into(), vec![input]),
             Type::Unit,
         ),
-        &Type::Bool => Expr::with_type(
+        Type::Bool => Expr::with_type(
             ExprKind::Function("print_bool".into(), vec![input]),
             Type::Unit,
         ),
@@ -150,7 +150,12 @@ impl IrGenerator {
             var_counter: 1,
             label_counters: HashMap::new(),
             current_depth: 0,
-            all_vars: vec![],
+            // this isn't really a value you'd ever need, but this keeps
+            // assembly generation much simpler as we can just treat unit as a
+            // throwaway variable
+            all_vars: vec![IRVar {
+                name: "unit".to_string(),
+            }],
         };
 
         for op_name in BinaryOp::VARIANTS.iter().chain(UnaryOp::VARIANTS) {
@@ -188,7 +193,7 @@ impl IrGenerator {
         let out = Label {
             name: format!(
                 "{}{}",
-                kind.to_string(),
+                kind,
                 if *count > 1 {
                     count.to_string()
                 } else {
@@ -201,11 +206,9 @@ impl IrGenerator {
     }
     fn get_symbol(&self, name: &str) -> Result<IRVar, String> {
         // try to look up identifier with decreasing depth
-        for (idx, locals) in self.symbols.iter().enumerate() {
+        for (idx, locals) in self.symbols.iter().enumerate().rev() {
             if idx > self.current_depth {
-                return Err(format!(
-                    "Could not find type of local {name}. Is it not defined yet?"
-                ));
+                continue;
             }
             if let Some(res) = locals.get(name) {
                 return Ok(res.clone());
@@ -265,6 +268,17 @@ impl IrGenerator {
                         },
                     ));
                     dest
+                // to implement short-circuiting we transform or operators to if-else statements
+                } else if *op == BinaryOp::Or {
+                    self.visit(&Expr::with_type(
+                        ExprKind::If(lhs.clone(), lhs.clone(), Some(rhs.clone())),
+                        expr.type_.clone().unwrap(),
+                    ))
+                } else if *op == BinaryOp::And {
+                    self.visit(&Expr::with_type(
+                        ExprKind::If(lhs.clone(), rhs.clone(), None),
+                        expr.type_.clone().unwrap(),
+                    ))
                 } else {
                     let op_var = self.symbols[0].get(&op.to_string()).unwrap().clone();
                     let lhs_var = self.visit(lhs.as_ref());
@@ -556,3 +570,5 @@ Call(print_int, [x], x2)",
         );
     }
 }
+
+// TODO: tests for short-circuiting

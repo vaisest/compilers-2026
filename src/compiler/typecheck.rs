@@ -108,6 +108,9 @@ impl TypeChecker {
                         "Variable assignment does not match variable type declaration. Expected {t:?}. Instead found {rhs_type:?}"
                     ));
                 }
+                if self.locals[depth].contains_key(name) {
+                    return Err(format!("Declaring variable {name} twice is not allowed."));
+                }
                 self.locals[depth].insert(name.clone(), rhs_type.clone());
                 rhs_type
             }
@@ -205,7 +208,7 @@ impl TypeChecker {
                 // edge case: empty block
                 if let Some(map) = self.locals.get_mut(depth + 1) {
                     map.clear();
-                };
+                }
                 ret_type
             }
             ExprKind::If(cond, then, otherwise) => {
