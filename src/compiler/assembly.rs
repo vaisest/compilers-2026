@@ -133,9 +133,11 @@ main:
                         }
                         "Not" => {
                             format!(
-                                "movq {}, %rax
-                            not %rax
-                            movq %rax, {}",
+                                "mov {}, %rdi
+                                cmp $0, %rdi
+                                sete %al
+                                movzx %al, %rax
+                                mov %rax, {}",
                                 arg_locs[0], dest_loc
                             )
                         }
@@ -178,7 +180,7 @@ main:
                         }
                         "read_int" => {
                             format!(
-                                "callq print_int
+                                "callq read_int
                             movq %rax, {dest_loc}"
                             )
                         }

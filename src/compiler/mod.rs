@@ -17,7 +17,7 @@ pub fn compile(source_code: &str, _file_name: Option<String>) -> Result<Vec<u8>,
     typecheck_res?;
     let (ir, ir_vars) = generator::generate_ir(&ast, &reserved_names);
     let assembly = assembly::generate_assembly(ir, ir_vars)?;
-    // println!("{assembly}"); TODO: add as a cli option
+    // println!("{assembly}"); // TODO: add as a cli option
 
     let file = NamedTempFile::new().expect("failed to create temp file");
 
