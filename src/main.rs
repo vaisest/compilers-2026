@@ -84,7 +84,6 @@ fn main() {
     match cli.command {
         Commands::Compile { output, input_file } => {
             let source_code = read_to_string(input_file).unwrap();
-            dbg!(&source_code);
             let program = compile(&source_code, None).expect("compilation failure");
             println!("Writing program to {output}");
             fs::write(output, program).expect("failed to write program output");

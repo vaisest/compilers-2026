@@ -229,7 +229,6 @@ mod tests {
         let (typecheck_res, reserved_names) = typecheck::typecheck(&mut ast);
         typecheck_res.unwrap();
         let (ir, ir_vars) = generator::generate_ir(&ast, &reserved_names);
-        dbg!(&ir_vars);
         let ass = generate_assembly(ir, ir_vars).unwrap();
 
         assert!(!ass.is_empty());
