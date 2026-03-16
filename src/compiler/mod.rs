@@ -3,7 +3,7 @@ use std::{fs, process::Command};
 use tempfile::NamedTempFile;
 
 mod assembly;
-mod generator;
+mod ir;
 mod parser;
 mod tokenizer;
 mod typecheck;
@@ -15,7 +15,7 @@ pub fn compile(source_code: &str, _file_name: Option<String>) -> Result<Vec<u8>,
 
     let (typecheck_res, reserved_names) = typecheck::typecheck(&mut ast);
     typecheck_res?;
-    let (ir, ir_vars) = generator::generate_ir(&ast, &reserved_names);
+    let (ir, ir_vars) = ir::generate_ir(&ast, &reserved_names);
     let assembly = assembly::generate_assembly(ir, ir_vars)?;
     // println!("{assembly}"); // TODO: add as a cli option
 

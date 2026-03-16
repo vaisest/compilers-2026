@@ -40,6 +40,7 @@ impl Display for IRVar {
 }
 
 pub struct Instruction {
+    #[allow(dead_code)] // i probably should have used it in error messages
     pub location: CodeLoc,
     pub instruction: InstructionKind,
 }
@@ -479,7 +480,7 @@ mod tests {
     use itertools::Itertools;
 
     use crate::compiler::{
-        generator::generate_ir,
+        ir::generate_ir,
         parser::{Expr, parse},
         tokenizer::tokenize,
         typecheck::typecheck,

@@ -1,4 +1,4 @@
-use crate::compiler::generator::{IR, IRVar, Instruction, InstructionKind};
+use crate::compiler::ir::{IR, IRVar, Instruction, InstructionKind};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -19,7 +19,6 @@ impl Locals {
             }
             stack_used += 8;
         }
-        dbg!(&map);
         Self {
             var_location_map: map,
             stack_used,
@@ -192,7 +191,6 @@ main:
                                 for (var, reg) in arg_locs.iter().zip(registers) {
                                     writeln!(assembly, "movq {var}, %{reg}").unwrap();
                                 }
-                                dbg!(&op_var);
                                 // call and save result
                                 writeln!(
                                     assembly,
@@ -227,7 +225,7 @@ ret"
 #[cfg(test)]
 mod tests {
     use super::generate_assembly;
-    use crate::compiler::{generator, parser, tokenizer, typecheck};
+    use crate::compiler::{ir, parser, tokenizer, typecheck};
 
     fn assert_compiles(source_code: &str) {
         let tokens = tokenizer::tokenize(source_code);
@@ -235,7 +233,7 @@ mod tests {
         let mut ast = parser::parse(tokens).unwrap();
         let (typecheck_res, reserved_names) = typecheck::typecheck(&mut ast);
         typecheck_res.unwrap();
-        let (ir, ir_vars) = generator::generate_ir(&ast, &reserved_names);
+        let (ir, ir_vars) = ir::generate_ir(&ast, &reserved_names);
         let ass = generate_assembly(ir, ir_vars).unwrap();
 
         assert!(!ass.is_empty());

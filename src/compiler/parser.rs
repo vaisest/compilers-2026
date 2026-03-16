@@ -368,10 +368,17 @@ impl Parser {
             // make { a b } illegal. only blocks are allowed to omit semicolons on non-last expressions
             if !had_semicol
                 && expressions.last().is_some_and(|v: &Expr| {
-                    !matches!(
-                        v.kind,
-                        ExprKind::Block(..) | ExprKind::If(..) | ExprKind::While(..)
-                    )
+                    match &v.kind {
+                        // blocks allowed
+                        ExprKind::Block(..) | ExprKind::If(..) | ExprKind::While(..) => false,
+                        // binary ops allowed if the right side is a block
+                        ExprKind::Binary(_, _, rhs) | ExprKind::Local(_, rhs) => !matches!(
+                            rhs.kind,
+                            ExprKind::Block(..) | ExprKind::If(..) | ExprKind::While(..)
+                        ),
+                        // otherwise: needs a ;
+                        _ => true,
+                    }
                 })
             {
                 return Err(format!(

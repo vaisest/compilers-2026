@@ -379,5 +379,3 @@ if __name__ == "__main__":
     assembly = open(in_file_name).read()
     program = assemble_and_get_executable(assembly, None, link_with_c=False)
     sys.stdout.buffer.write(program)
-    # with open("a.out", "wb") as f:
-    #     f.write(program)

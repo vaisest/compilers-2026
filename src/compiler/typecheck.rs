@@ -112,6 +112,8 @@ impl TypeChecker {
                     return Err(format!("Declaring variable {name} twice is not allowed."));
                 }
                 self.locals[depth].insert(name.clone(), rhs_type.clone());
+                // this actually differs from the language spec. variable
+                // declarations are supposed to return unit
                 rhs_type
             }
             ExprKind::Binary(bin_op, lhs, rhs) => {
@@ -204,11 +206,20 @@ impl TypeChecker {
                 for expr in exprs.iter_mut() {
                     last_type = self.typecheck(expr, depth + 1)?;
                 }
-                let ret_type = if *return_last { last_type } else { Type::Unit };
+                let ret_type = if *return_last &&
+                // edge case: don't return variable declaration value as those
+                // are supposed to bet unit return type, but aren't
+                !exprs.last().is_some_and(|v| matches!(v.kind, ExprKind::Local(..)))
+                {
+                    last_type
+                } else {
+                    Type::Unit
+                };
                 // edge case: empty block
                 if let Some(map) = self.locals.get_mut(depth + 1) {
                     map.clear();
                 }
+
                 ret_type
             }
             ExprKind::If(cond, then, otherwise) => {
@@ -314,5 +325,6 @@ var f = print_int;
 f(a + 3)",
             Type::Unit,
         );
+        check_and_assert_eq("{var x = 1}", Type::Unit);
     }
 }
